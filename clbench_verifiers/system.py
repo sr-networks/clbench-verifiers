@@ -38,6 +38,11 @@ except ImportError:  # pragma: no cover
     Query = Response = UsageEvent = None  # type: ignore
 
 
+from .notepad import (
+    build_schema_with_notepad,
+    render_notepad_for_prompt,
+    split_notepad_action,
+)
 from .parsing import format_schema_hint, parse_action
 
 
@@ -45,6 +50,12 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are an agent solving a continual-learning benchmark task. "
     "Respond every turn with a single JSON object — no prose, no markdown "
     "fences — matching the schema for the current turn."
+)
+_NOTEPAD_SYSTEM_PROMPT_SUFFIX = (
+    " You may write to a persistent notepad via the optional `notepad_update` "
+    "field. The notepad is shown at the start of every new task instance, so "
+    "use it to record durable, transferable observations rather than per-turn "
+    "scratch work."
 )
 
 
@@ -70,6 +81,9 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
         request_timeout: float = 120.0,
         keep_history: bool = True,
         max_history_messages: int = 200,
+        use_notepad: bool = False,
+        notepad_max_chars: int = 4000,
+        clear_notepad_between_instances: bool = False,
     ):
         if not _CLBENCH_AVAILABLE:  # pragma: no cover
             raise ImportError(
@@ -85,11 +99,17 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
         self.request_timeout = request_timeout
         self.keep_history = keep_history
         self.max_history_messages = max_history_messages
+        self.use_notepad = use_notepad
+        self.notepad_max_chars = notepad_max_chars
+        self.clear_notepad_between_instances = clear_notepad_between_instances
 
         # Lazy client — construct on first use so module imports stay cheap.
         self._client = None
         self._messages: list[dict[str, Any]] = []
         self._current_schema_id: Optional[str] = None
+        self._notepad: str = ""
+        self._instance_started: bool = True
+        self._last_instance_id: Optional[str] = None
 
     # --- CLBench plumbing -------------------------------------------------
 
@@ -100,6 +120,9 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
     def reset(self) -> None:
         self._messages = []
         self._current_schema_id = None
+        self._notepad = ""
+        self._instance_started = True
+        self._last_instance_id = None
 
     # --- Core respond loop ------------------------------------------------
 
@@ -120,17 +143,17 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
         return self._client
 
     def _system_prompt(self, schema) -> str:
+        base = _DEFAULT_SYSTEM_PROMPT
+        if self.use_notepad:
+            base += _NOTEPAD_SYSTEM_PROMPT_SUFFIX
         if schema is None:
-            return _DEFAULT_SYSTEM_PROMPT
-        return (
-            _DEFAULT_SYSTEM_PROMPT
-            + "\n\nSchema:\n```json\n"
-            + format_schema_hint(schema)
-            + "\n```"
-        )
+            return base
+        return base + "\n\nSchema:\n```json\n" + format_schema_hint(schema) + "\n```"
 
     def _format_user_message(self, query) -> dict:
         parts: list[str] = []
+        if self.use_notepad and self._instance_started and self._notepad:
+            parts.append(render_notepad_for_prompt(self._notepad))
         if query.feedback is not None and query.feedback.content:
             parts.append(f"=== FEEDBACK ===\n{query.feedback.content}")
         parts.append(query.prompt)
@@ -162,7 +185,36 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
 
     def respond(self, query) -> Any:
         client = self._ensure_client()
-        self._maybe_swap_system_prompt(query.response_schema)
+
+        # Detect instance boundary by instance_id transition + feedback flag.
+        feedback_complete = (
+            query.feedback is not None
+            and bool(getattr(query.feedback, "instance_complete", True))
+        )
+        instance_id_changed = (
+            query.instance_id is not None
+            and query.instance_id != self._last_instance_id
+        )
+        self._instance_started = (
+            instance_id_changed or feedback_complete or self._last_instance_id is None
+        )
+        if (
+            self._instance_started
+            and self.clear_notepad_between_instances
+            and self._last_instance_id is not None
+        ):
+            self._notepad = ""
+        self._last_instance_id = query.instance_id
+
+        # Pick the schema we'll show / parse against.
+        task_schema = query.response_schema
+        prompt_schema = (
+            build_schema_with_notepad(task_schema)
+            if self.use_notepad and task_schema is not None
+            else task_schema
+        )
+
+        self._maybe_swap_system_prompt(prompt_schema)
         self._messages.append(self._format_user_message(query))
         self._truncate_history()
 
@@ -187,22 +239,38 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
                 )
             )
 
-        action, error = parse_action(text, query.response_schema)
-        if action is None:
-            # Fall back to a schema-default action so the run can continue.
-            # This costs reward but doesn't crash the eval. The metadata field
-            # surfaces the failure for postmortem analysis.
+        parsed, error = parse_action(text, prompt_schema)
+        if parsed is None:
             try:
-                action = query.response_schema()  # type: ignore[call-arg]
+                action: Any = task_schema()  # type: ignore[call-arg]
             except Exception:
-                # Last resort: return whatever we can build.
-                action = _coerce_minimal_action(query.response_schema, text)
+                action = _coerce_minimal_action(task_schema, text)
+            notepad_update = None
+        else:
+            if self.use_notepad and task_schema is not None:
+                action, notepad_update = split_notepad_action(parsed, task_schema)
+            else:
+                action, notepad_update = parsed, None
 
-        # Append the assistant's verbatim text to history if we keep it.
+        if notepad_update is not None:
+            if len(notepad_update) > self.notepad_max_chars:
+                notepad_update = (
+                    notepad_update[: self.notepad_max_chars] + "\n[... truncated ...]"
+                )
+            self._notepad = notepad_update
+
         if self.keep_history:
             self._messages.append({"role": "assistant", "content": text})
 
-        return Response(action=action, metadata={"parse_error": error, "raw_text": text})
+        return Response(
+            action=action,
+            metadata={
+                "parse_error": error,
+                "raw_text": text,
+                "notepad_updated": notepad_update is not None,
+                "notepad_length": len(self._notepad),
+            },
+        )
 
 
 def _coerce_minimal_action(schema, raw_text: str):

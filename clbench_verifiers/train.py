@@ -45,6 +45,8 @@ class TrainConfig:
     max_turns: int = 64
     parse_failure_penalty: float = -1.0
     end_on_parse_failure: bool = False
+    use_notepad: bool = False
+    notepad_max_chars: int = 4000
 
     # Model
     model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
@@ -152,6 +154,8 @@ def _build_env(cfg: TrainConfig):
         max_turns=cfg.max_turns,
         parse_failure_penalty=cfg.parse_failure_penalty,
         end_on_parse_failure=cfg.end_on_parse_failure,
+        use_notepad=cfg.use_notepad,
+        notepad_max_chars=cfg.notepad_max_chars,
     )
 
 

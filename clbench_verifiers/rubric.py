@@ -62,6 +62,18 @@ async def num_instances_completed(*, state=None, **_kwargs) -> float:
     return float(rs.instances_completed) if rs else 0.0
 
 
+async def num_notepad_updates(*, state=None, **_kwargs) -> float:
+    """Diagnostic — counts how often the model wrote to the notepad."""
+    rs = _get_state(state)
+    return float(getattr(rs, "notepad_updates", 0)) if rs else 0.0
+
+
+async def notepad_length_chars(*, state=None, **_kwargs) -> float:
+    """Diagnostic — final notepad length in characters."""
+    rs = _get_state(state)
+    return float(len(getattr(rs, "notepad", ""))) if rs else 0.0
+
+
 def build_clbench_rubric(
     *,
     parse_failure_penalty: float = -1.0,
@@ -83,14 +95,16 @@ def build_clbench_rubric(
     funcs: list[RewardFn] = [
         mean_instance_reward,
         make_parse_failure_penalty(parse_failure_penalty),
-        num_instances_completed,  # diagnostic; weight-zero by default
+        num_instances_completed,    # diagnostic; weight 0
+        num_notepad_updates,        # diagnostic; weight 0
+        notepad_length_chars,       # diagnostic; weight 0
     ]
     if extra_funcs:
         funcs.extend(extra_funcs)
 
-    # All weights default to 1.0 except the diagnostic. verifiers' Rubric
-    # supports per-function weights via the ``weights`` arg.
-    weights = [1.0, 1.0, 0.0] + [1.0] * len(extra_funcs or [])
+    # The first two are real reward components; the next three are diagnostics
+    # logged each rollout but excluded from the reward (weight 0).
+    weights = [1.0, 1.0, 0.0, 0.0, 0.0] + [1.0] * len(extra_funcs or [])
     return vf.Rubric(funcs=funcs, weights=weights)
 
 

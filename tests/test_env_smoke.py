@@ -156,6 +156,8 @@ def test_env_drives_poker_task_smoke():
         max_instances_per_rollout=1,
         schema_hint_in_system=True,
         end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -190,6 +192,8 @@ def test_env_handles_parse_failure():
         max_instances_per_rollout=1,
         schema_hint_in_system=True,
         end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -207,6 +211,117 @@ def test_env_handles_parse_failure():
     assert any("PARSE ERROR" in m.get("content", "") for m in msgs)
 
 
+def test_notepad_schema_augmentation():
+    from pydantic import BaseModel
+    from clbench_verifiers.notepad import (
+        build_schema_with_notepad,
+        split_notepad_action,
+    )
+
+    class A(BaseModel):
+        action: str
+        amount: int = 0
+
+    Aug = build_schema_with_notepad(A)
+    assert "notepad_update" in Aug.model_fields
+    # Round-trip with notepad.
+    parsed = Aug(action="FOLD", notepad_update="opponent calls a lot")
+    task_action, np_text = split_notepad_action(parsed, A)
+    assert task_action.action == "FOLD"
+    assert np_text == "opponent calls a lot"
+    # Round-trip without notepad.
+    parsed2 = Aug(action="CALL")
+    task_action2, np_text2 = split_notepad_action(parsed2, A)
+    assert task_action2.action == "CALL"
+    assert np_text2 is None
+
+
+def test_env_notepad_mode_persists_across_instances():
+    """
+    Drive a notepad-enabled env through one parse-success turn that also
+    writes the notepad, then verify the notepad is preserved on rollout state.
+    """
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={
+            "num_instances": 4,
+            "opponent_policy": "calling_station",
+            "seed": 0,
+        },
+        max_instances_per_rollout=4,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=True,
+        notepad_max_chars=200,
+        rubric=_Rubric(),
+        max_turns=64,
+    )
+
+    valid_text = (
+        '```json\n'
+        '{"thinking": "fold weak", "action": "FOLD", '
+        '"notepad_update": "opponent is a calling station; value-bet wide"}\n'
+        '```'
+    )
+
+    async def go():
+        state = {"messages": []}
+        await env.setup_state(state)
+        # System prompt should mention the notepad.
+        sys_content = state["messages"][0]["content"]
+        assert "notepad" in sys_content.lower()
+        state["messages"].append({"role": "assistant", "content": valid_text})
+        await env.env_response(state["messages"], state)
+        return state["clbench"]
+
+    rs = asyncio.run(go())
+    assert rs.notepad_updates == 1
+    assert "calling station" in rs.notepad
+    assert rs.parse_failures == 0
+
+
+def test_env_notepad_truncates_oversized():
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 2, "seed": 0},
+        max_instances_per_rollout=2,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=True,
+        notepad_max_chars=50,
+        rubric=_Rubric(),
+        max_turns=32,
+    )
+
+    big_note = "x" * 500
+    text = (
+        '{"thinking": "test", "action": "FOLD", "notepad_update": '
+        f'"{big_note}"}}'
+    )
+
+    async def go():
+        state = {"messages": []}
+        await env.setup_state(state)
+        state["messages"].append({"role": "assistant", "content": text})
+        await env.env_response(state["messages"], state)
+        return state["clbench"]
+
+    rs = asyncio.run(go())
+    assert len(rs.notepad) <= 50 + len("\n[... notepad truncated ...]") + 5
+
+
 if __name__ == "__main__":
     test_parse_action_extracts_fenced_json()
     test_parse_action_handles_inline_json()
@@ -214,4 +329,7 @@ if __name__ == "__main__":
     test_format_schema_hint_renders_pydantic_schema()
     test_env_drives_poker_task_smoke()
     test_env_handles_parse_failure()
+    test_notepad_schema_augmentation()
+    test_env_notepad_mode_persists_across_instances()
+    test_env_notepad_truncates_oversized()
     print("All smoke tests passed.")

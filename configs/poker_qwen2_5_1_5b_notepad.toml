@@ -1,0 +1,56 @@
+# GRPO training config for Qwen2.5-1.5B-Instruct on exploitable_poker WITH NOTEPAD.
+#
+# Key differences from poker_qwen2_5_1_5b.toml:
+#   - max_instances_per_rollout = 4 (notepad is pointless with 1)
+#   - use_notepad = true
+#   - max_turns raised because rollouts are now ~4× longer
+#   - rollouts_per_step / batch_size halved to keep memory budget similar
+#
+# The reward signal is still mean instance reward; the policy learns to use
+# the notepad implicitly because writing useful notes raises later instances'
+# rewards within the same rollout, which raises the rollout's group-relative
+# advantage.
+
+task_name = "exploitable_poker"
+max_instances_per_rollout = 4
+max_turns = 96
+parse_failure_penalty = -1.0
+end_on_parse_failure = false
+use_notepad = true
+notepad_max_chars = 2000
+
+[task_kwargs]
+num_instances = 4            # match max_instances_per_rollout
+opponent_policy = "calling_station"
+seed = 0
+
+# Model
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+use_lora = true
+lora_r = 16
+lora_alpha = 32
+bf16 = true
+
+# Training
+output_dir = "./checkpoints/poker_qwen2_5_1_5b_notepad"
+num_train_steps = 200
+rollouts_per_step = 4
+batch_size = 4
+learning_rate = 1e-6
+grad_accum = 1
+warmup_steps = 5
+save_every = 50
+log_every = 1
+max_prompt_tokens = 6144     # raise to fit notepad + multi-instance history
+max_completion_tokens = 1024
+
+# vLLM
+vllm_gpu_memory_utilization = 0.45
+vllm_dtype = "bfloat16"
+sampling_temperature = 1.0
+sampling_top_p = 0.95
+sampling_top_k = 50
+
+# Logging
+log_level = "INFO"
+# wandb_project = "clbench-verifiers"

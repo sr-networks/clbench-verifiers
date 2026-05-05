@@ -89,11 +89,16 @@ class CLBenchRolloutState:
 
     task: Any  # ContinualLearningTask instance
     pending_query: Any  # Query: the next user-prompt to deliver to the model
-    schema: Any  # type[BaseModel]: the response schema for the current turn
+    task_schema: Any  # type[BaseModel]: the *task-native* schema for this turn
+    prompt_schema: Any  # type[BaseModel]: schema we actually present to the model
+    # (== task_schema if notepad disabled, else task_schema + notepad_update)
+    notepad: str = ""  # current notepad content (icl_notepad-style memory)
     instance_outcomes: list = field(default_factory=list)
     parse_failures: int = 0
+    notepad_updates: int = 0
     turns: int = 0
     instances_completed: int = 0
+    instance_started: bool = True  # next user-msg builder prepends notepad if True
     finished: bool = False
     last_error: Optional[str] = None
 
@@ -112,6 +117,8 @@ def build_clbench_env(
     schema_hint_in_system: bool = True,
     parse_failure_penalty: float = -1.0,
     end_on_parse_failure: bool = False,
+    use_notepad: bool = False,
+    notepad_max_chars: int = 4000,
     timeout_seconds: float | None = None,
     rubric_funcs: Optional[list[Callable]] = None,
 ):
@@ -142,6 +149,14 @@ def build_clbench_env(
         If True, a parse failure terminates the rollout. If False (default),
         we continue and re-prompt the model — gives the policy a chance to
         recover and learn the correct format.
+    use_notepad
+        If True, augment the response schema with an optional ``notepad_update``
+        field (icl_notepad style). The notepad persists across instances within
+        a single rollout and is prepended to the first turn of every new
+        instance. Only meaningful with ``max_instances_per_rollout > 1``.
+    notepad_max_chars
+        Soft cap on notepad length. If the model writes more, we truncate
+        (taking the head) before injecting. Prevents context blow-up.
     """
     from .rubric import build_clbench_rubric
 
@@ -155,6 +170,8 @@ def build_clbench_env(
         max_instances_per_rollout=max_instances_per_rollout,
         schema_hint_in_system=schema_hint_in_system,
         end_on_parse_failure=end_on_parse_failure,
+        use_notepad=use_notepad,
+        notepad_max_chars=notepad_max_chars,
         rubric=rubric,
         max_turns=max_turns,
         timeout_seconds=timeout_seconds,
@@ -181,6 +198,8 @@ def _make_env_class():
             max_instances_per_rollout: int,
             schema_hint_in_system: bool,
             end_on_parse_failure: bool,
+            use_notepad: bool,
+            notepad_max_chars: int,
             rubric,
             max_turns: int,
             timeout_seconds: float | None = None,
@@ -191,6 +210,16 @@ def _make_env_class():
             self.max_instances_per_rollout = max_instances_per_rollout
             self.schema_hint_in_system = schema_hint_in_system
             self.end_on_parse_failure = end_on_parse_failure
+            self.use_notepad = use_notepad
+            self.notepad_max_chars = notepad_max_chars
+
+            if use_notepad and max_instances_per_rollout < 2:
+                logger.warning(
+                    "use_notepad=True with max_instances_per_rollout=%d means "
+                    "the notepad never gets replayed (it's reset every rollout). "
+                    "You probably want max_instances_per_rollout >= 2.",
+                    max_instances_per_rollout,
+                )
 
             # We construct the task once eagerly to fail-fast if the task name
             # is wrong or its extras are missing. Rollout-time tasks are fresh
@@ -213,10 +242,21 @@ def _make_env_class():
             task_cls = cl["get_task_class"](self.task_name)
             return task_cls(**self.task_kwargs)
 
-        def _build_user_message(self, query, error: Optional[str] = None) -> dict:
+        def _build_user_message(
+            self,
+            query,
+            *,
+            prompt_schema=None,
+            notepad: str = "",
+            instance_started: bool = False,
+            error: Optional[str] = None,
+        ) -> dict:
             from .parsing import format_schema_hint
+            from .notepad import render_notepad_for_prompt
 
             parts: list[str] = []
+            if instance_started and notepad:
+                parts.append(render_notepad_for_prompt(notepad))
             if query.feedback is not None and query.feedback.content:
                 parts.append(f"=== FEEDBACK ===\n{query.feedback.content}")
             if error:
@@ -226,10 +266,11 @@ def _make_env_class():
                     "schema. Do not add prose outside the JSON."
                 )
             parts.append(query.prompt)
-            if not self.schema_hint_in_system and query.response_schema is not None:
+            schema = prompt_schema or query.response_schema
+            if not self.schema_hint_in_system and schema is not None:
                 parts.append(
                     "Respond with a JSON object matching this schema:\n```json\n"
-                    + format_schema_hint(query.response_schema)
+                    + format_schema_hint(schema)
                     + "\n```"
                 )
             return {"role": "user", "content": "\n\n".join(parts)}
@@ -242,6 +283,13 @@ def _make_env_class():
                 "Respond every turn with a single JSON object — no prose, no "
                 "markdown fences — matching the schema for the current turn."
             )
+            if self.use_notepad:
+                base += (
+                    " You may write to a persistent notepad via the optional "
+                    "`notepad_update` field. The notepad is shown at the start "
+                    "of every new task instance, so use it to record durable, "
+                    "transferable observations rather than per-turn scratch work."
+                )
             if not self.schema_hint_in_system or schema is None:
                 return base
             return (
@@ -260,21 +308,41 @@ def _make_env_class():
             Initialize per-rollout state: build the CLBench task, pull its
             first Query, and seed the messages list with system + first user.
             """
+            from .notepad import build_schema_with_notepad
+
             task = self._new_task()
             query = task.reset()
+            task_schema = query.response_schema
+            prompt_schema = (
+                build_schema_with_notepad(task_schema)
+                if self.use_notepad and task_schema is not None
+                else task_schema
+            )
 
             rs = CLBenchRolloutState(
                 task=task,
                 pending_query=query,
-                schema=query.response_schema,
+                task_schema=task_schema,
+                prompt_schema=prompt_schema,
+                instance_started=True,
             )
             state["clbench"] = rs
 
-            # Mutate state["messages"] in place — the verifiers convention.
             messages = state.setdefault("messages", [])
             if not messages or messages[0].get("role") != "system":
-                messages.insert(0, {"role": "system", "content": self._system_prompt(rs.schema)})
-            messages.append(self._build_user_message(query))
+                messages.insert(
+                    0,
+                    {"role": "system", "content": self._system_prompt(prompt_schema)},
+                )
+            messages.append(
+                self._build_user_message(
+                    query,
+                    prompt_schema=prompt_schema,
+                    notepad=rs.notepad,
+                    instance_started=True,
+                )
+            )
+            rs.instance_started = False
 
         async def is_completed(self, messages, state, **kwargs) -> bool:
             rs: Optional[CLBenchRolloutState] = state.get("clbench")
@@ -296,9 +364,10 @@ def _make_env_class():
             assistant_text = self._latest_assistant_text(messages)
 
             from .parsing import parse_action
+            from .notepad import split_notepad_action
 
-            action, error = parse_action(assistant_text, rs.schema)
-            if action is None:
+            parsed, error = parse_action(assistant_text, rs.prompt_schema)
+            if parsed is None:
                 rs.parse_failures += 1
                 rs.last_error = error
                 if self.end_on_parse_failure:
@@ -312,7 +381,24 @@ def _make_env_class():
                         }
                     ]
                 # Re-prompt with the same query and an explicit error note.
-                return [self._build_user_message(rs.pending_query, error=error)]
+                return [
+                    self._build_user_message(
+                        rs.pending_query,
+                        prompt_schema=rs.prompt_schema,
+                        notepad=rs.notepad,
+                        instance_started=False,
+                        error=error,
+                    )
+                ]
+
+            # Strip out notepad_update before handing the action to the task.
+            if self.use_notepad:
+                action, notepad_update = split_notepad_action(parsed, rs.task_schema)
+                if notepad_update is not None:
+                    rs.notepad = self._maybe_truncate(notepad_update)
+                    rs.notepad_updates += 1
+            else:
+                action = parsed
 
             response = Response(action=action, metadata={})
             try:
@@ -366,13 +452,38 @@ def _make_env_class():
                         "content": "=== ROLLOUT END (no next query) ===",
                     }
                 ]
+
+            # Update schemas if the task swapped them mid-rollout.
+            from .notepad import build_schema_with_notepad
+
+            if next_query.response_schema is not None:
+                rs.task_schema = next_query.response_schema
+                rs.prompt_schema = (
+                    build_schema_with_notepad(rs.task_schema)
+                    if self.use_notepad
+                    else rs.task_schema
+                )
+
             rs.pending_query = next_query
-            rs.schema = next_query.response_schema or rs.schema
-            return [self._build_user_message(next_query)]
+            instance_started = bool(instance_complete)
+            return [
+                self._build_user_message(
+                    next_query,
+                    prompt_schema=rs.prompt_schema,
+                    notepad=rs.notepad,
+                    instance_started=instance_started,
+                )
+            ]
 
         # ------------------------------------------------------------------
         # Helpers
         # ------------------------------------------------------------------
+
+        def _maybe_truncate(self, text: str) -> str:
+            if not text or len(text) <= self.notepad_max_chars:
+                return text
+            head = text[: self.notepad_max_chars]
+            return head + "\n[... notepad truncated ...]"
 
         @staticmethod
         def _latest_assistant_text(messages) -> str:
