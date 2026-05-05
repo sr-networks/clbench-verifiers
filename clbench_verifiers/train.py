@@ -125,22 +125,27 @@ def _build_seed_dataset(num_rows: int, env_name: str):
 def _build_model_and_tokenizer(cfg: TrainConfig):
     import verifiers as vf  # type: ignore
 
-    # vf.get_model_and_tokenizer handles HF + LoRA wiring uniformly.
+    # LoRA is configured on RLConfig in verifiers 0.1.7. Keep model loading
+    # plain here and let RLTrainer wrap it with PEFT.
     model_kwargs: dict[str, Any] = {}
     if cfg.bf16:
         import torch  # type: ignore
 
         model_kwargs["torch_dtype"] = torch.bfloat16
+    model_kwargs["attn_implementation"] = "sdpa"
+    model_kwargs["use_cache"] = False
 
-    lora_kwargs: dict[str, Any] = {}
-    if cfg.use_lora:
-        lora_kwargs = vf.lora_defaults(r=cfg.lora_r, lora_alpha=cfg.lora_alpha)
-
-    model, tokenizer = vf.get_model_and_tokenizer(
-        cfg.model_name,
-        model_kwargs=model_kwargs,
-        lora_kwargs=lora_kwargs or None,
-    )
+    try:
+        model, tokenizer = vf.get_model_and_tokenizer(
+            cfg.model_name,
+            use_liger=False,
+            model_kwargs=model_kwargs,
+        )
+    except TypeError:
+        model, tokenizer = vf.get_model_and_tokenizer(
+            cfg.model_name,
+            model_kwargs=model_kwargs,
+        )
     return model, tokenizer
 
 
@@ -162,7 +167,20 @@ def _build_env(cfg: TrainConfig):
 def _build_grpo_config(cfg: TrainConfig):
     import verifiers as vf  # type: ignore
 
-    base = vf.grpo_defaults()
+    try:
+        base = vf.RLConfig()
+    except AttributeError:
+        base = vf.grpo_defaults()
+    if cfg.use_lora and hasattr(base, "lora_config"):
+        from peft import LoraConfig  # type: ignore
+
+        base.lora_config = LoraConfig(
+            r=cfg.lora_r,
+            lora_alpha=cfg.lora_alpha,
+            lora_dropout=0.0,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
     # ``GRPOConfig`` is a dataclass / TrainingArguments-derived. We update it
     # in-place with our knobs. Names follow the TRL/verifiers GRPOConfig
     # convention; if the upstream API renames fields, adjust here.
@@ -179,10 +197,18 @@ def _build_grpo_config(cfg: TrainConfig):
         bf16=cfg.bf16,
         report_to=("wandb",) if cfg.wandb_project else (),
         run_name=cfg.wandb_run_name,
+        use_lora=cfg.use_lora,
+        lora_rank=cfg.lora_r,
+        lora_alpha=cfg.lora_alpha,
         # GRPO-specific
         num_generations=cfg.rollouts_per_step,
+        rollouts_per_example=cfg.rollouts_per_step,
+        micro_batch_size=cfg.batch_size,
         max_prompt_length=cfg.max_prompt_tokens,
+        max_prompt_len=cfg.max_prompt_tokens,
         max_completion_length=cfg.max_completion_tokens,
+        max_tokens=cfg.max_completion_tokens,
+        max_seq_len=cfg.max_prompt_tokens + cfg.max_completion_tokens,
         temperature=cfg.sampling_temperature,
         top_p=cfg.sampling_top_p,
         top_k=cfg.sampling_top_k,
@@ -219,12 +245,6 @@ def train(cfg: TrainConfig) -> str:
     logger.info("Building model: %s (lora=%s)", cfg.model_name, cfg.use_lora)
     model, tokenizer = _build_model_and_tokenizer(cfg)
 
-    logger.info("Building seed dataset (%d rows)", cfg.num_train_steps * cfg.batch_size)
-    train_dataset = _build_seed_dataset(
-        num_rows=cfg.num_train_steps * cfg.batch_size,
-        env_name=cfg.task_name,
-    )
-
     grpo_cfg = _build_grpo_config(cfg)
 
     logger.info("Output dir: %s", cfg.output_dir)
@@ -233,13 +253,26 @@ def train(cfg: TrainConfig) -> str:
     # vf.RLTrainer is verifiers' GRPO trainer (the "nano" trainer that
     # replaced vf.GRPOTrainer in v0.1.7). It takes the env so it can drive
     # rollouts internally.
-    trainer = vf.RLTrainer(
-        model=model,
-        processing_class=tokenizer,
-        env=env,
-        args=grpo_cfg,
-        train_dataset=train_dataset,
-    )
+    try:
+        trainer = vf.RLTrainer(
+            model=model,
+            processing_class=tokenizer,
+            env=env,
+            args=grpo_cfg,
+        )
+    except TypeError:
+        logger.info("Building seed dataset (%d rows)", cfg.num_train_steps * cfg.batch_size)
+        train_dataset = _build_seed_dataset(
+            num_rows=cfg.num_train_steps * cfg.batch_size,
+            env_name=cfg.task_name,
+        )
+        trainer = vf.RLTrainer(
+            model=model,
+            processing_class=tokenizer,
+            env=env,
+            args=grpo_cfg,
+            train_dataset=train_dataset,
+        )
 
     logger.info("Starting GRPO training for %d steps", cfg.num_train_steps)
     trainer.train()
