@@ -23,7 +23,7 @@ echo ">> Running CLBench setup (downloads any task assets)…"
 ( cd "$CLBENCH_DIR" && python -m src.cli list )
 
 echo ">> Installing verifiers + RL stack…"
-pip install -q "verifiers-rl>=0.1.7"
+pip install -q "verifiers[rl]>=0.1.7"
 pip install -q "trl>=0.12" "transformers>=4.45" "accelerate>=0.34" "datasets>=2.20" "peft>=0.12"
 
 # vLLM is the slow one; pin a known-good version compatible with current TRL/verifiers.

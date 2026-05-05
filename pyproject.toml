@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 # RL stack — heavy, only needed for training. Skip for env-only/eval use.
 train = [
-    "verifiers-rl>=0.1.7",
+    "verifiers[rl]>=0.1.7",
     "transformers>=4.45",
     "accelerate>=0.34",
     "trl>=0.12",
