@@ -30,7 +30,10 @@ pip install -q "trl>=0.12" "transformers>=4.45" "accelerate>=0.34" "datasets>=2.
 pip install -q "vllm>=0.6.3"
 
 echo ">> Installing this glue package in editable mode…"
-pip install -e "$REPO_DIR"
+# Dependencies are installed explicitly above. Use --no-deps here so pip does
+# not re-resolve cl-benchmark and reject Colab's Python despite the earlier
+# --ignore-requires-python install.
+pip install --no-deps -e "$REPO_DIR"
 
 echo ">> Done. Try:"
 echo "   clbv-train --config $REPO_DIR/configs/poker_qwen2_5_1_5b.toml"
