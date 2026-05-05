@@ -138,31 +138,139 @@ that rollout, raising its group-relative advantage.
 > `max_instances_per_rollout >= 2`. The wrapper warns you if you set
 > `use_notepad=True` with a single-instance rollout.
 
-## Quickstart on Colab
+## Run it on Colab (step-by-step)
 
-Spin up a Colab with an A100 (or H100 if available), then in a single cell:
+### 1. Open a notebook with A100 attached
 
-```bash
+Go to <https://colab.research.google.com> → **File → New notebook**.
+
+Then **Runtime → Change runtime type → Hardware accelerator: A100 GPU → Save**.
+(H100 works too on Pro+; free-tier T4 will technically run but you'll need to
+drop `vllm_gpu_memory_utilization` to ~0.30 in the TOML and expect it to be slow.)
+
+Wait until the runtime indicator says **Connected to A100**.
+
+### 2. Confirm the GPU
+
+```python
 !nvidia-smi
+```
+
+You should see an A100 with ~40 GB. If it says "Tesla T4" or "no GPU", the
+runtime didn't switch — go back to step 1.
+
+### 3. Clone the repo and run setup
+
+```python
 %cd /content
 !git clone https://github.com/sr-networks/clbench-verifiers.git
 %cd clbench-verifiers
 !bash scripts/colab_setup.sh
+```
 
-# Train (plain GRPO, ~1 hr on A100):
+Setup takes ~5–8 min (vLLM is the slow install). The script is idempotent —
+re-running is safe after a runtime restart.
+
+### 4. Smoke-test on CPU (no GPU work, ~10 sec)
+
+```python
+!python tests/test_env_smoke.py
+```
+
+You should see `All smoke tests passed.` This proves the env wrapper, parser,
+notepad augmentation, and the CLBench poker task all wire up correctly
+**before** you burn GPU time on training. If anything errors here, fix it
+before going further.
+
+### 5. Train — pick one of these two cells
+
+**Plain GRPO** (single-instance rollouts, no memory, ~1 hr on A100):
+
+```python
 !clbv-train --config configs/poker_qwen2_5_1_5b.toml
+```
 
-# Or, train with notepad memory (~2× longer per step due to multi-instance rollouts):
+**Notepad GRPO** (4-instance rollouts with icl_notepad-style memory,
+~2 hr on A100):
+
+```python
 !clbv-train --config configs/poker_qwen2_5_1_5b_notepad.toml
+```
 
-# Evaluate the trained checkpoint via the official bench:
+Watch the `mean_instance_reward` column in the per-step output — it should
+drift upward over the first ~30 steps. If it stays flat at 0 or strongly
+negative the whole run, something is mis-wired; see "When something breaks"
+below.
+
+Checkpoints save every 50 steps under `./checkpoints/poker_qwen2_5_1_5b/`
+(or `..._notepad/`).
+
+### 6. Evaluate via the official CLBench harness
+
+For the plain checkpoint:
+
+```python
 !clbv-eval --checkpoint ./checkpoints/poker_qwen2_5_1_5b/final \
     --task exploitable_poker --schedule quick_test
 ```
 
-The `notebooks/train_poker.ipynb` notebook does the same in step-by-step form
-with a CPU smoke-test cell at the start so you can sanity-check the env
-without burning GPU time.
+For the notepad checkpoint, pass the same flag at eval time so the bench's
+view of the policy matches what was trained:
+
+```python
+!clbv-eval --checkpoint ./checkpoints/poker_qwen2_5_1_5b_notepad/final \
+    --task exploitable_poker --schedule quick_test \
+    --clbench-arg=--system.use_notepad=true
+```
+
+`clbv-eval` spawns a vLLM server, shells out to `clbench run …`, and tears the
+server down. You'll see the standard CLBench rollout output and a final
+mean-reward summary.
+
+### 7. Compare against the published baseline
+
+```python
+import gzip, json
+from pathlib import Path
+p = Path('continual-learning-bench/final_results/runs/icl-gpt-5.4/tasks/exploitable_poker.json.gz')
+with gzip.open(p) as f:
+    d = json.load(f)
+print('icl-gpt-5.4 mean reward:', d['summary']['aggregate']['score']['mean'])
+print('reset_each_instance baseline:', d['baseline_trace']['result']['score'])
+```
+
+The target is to clear the **`reset_each_instance` baseline** (≈ 1.29 for
+poker on gpt-5.4 — that's "same big model with no memory"). A 1.5B Qwen
+clearing it would be a clear win for GRPO + memory; it's a stretch goal but
+a credible target.
+
+### Or just open the notebook directly
+
+`notebooks/train_poker.ipynb` is steps 1–7 in cell form. In Colab:
+**File → Open notebook → GitHub tab → enter `sr-networks/clbench-verifiers` →
+pick `notebooks/train_poker.ipynb`**.
+
+### When something breaks
+
+In rough order of likelihood:
+
+1. **`vf.RLTrainer` argument-name drift.** The `_build_grpo_config` function
+   in `train.py` is the only piece not fully verified against current
+   verifiers source — if upstream renamed a field, the override warning will
+   be silent and the trainer will crash on construction. Fix is usually a
+   one- or two-line rename.
+2. **vLLM out-of-memory.** Drop `vllm_gpu_memory_utilization` in the TOML to
+   0.35 or 0.30, and/or `rollouts_per_step` to 4. On notepad config,
+   `max_prompt_tokens` is the other knob to lower.
+3. **`ModuleNotFoundError: src`.** Means CLBench didn't install. Run
+   `!pip show cl-benchmark` to confirm; if missing, re-run `colab_setup.sh`
+   or install manually with
+   `!pip install --ignore-requires-python git+https://github.com/pgasawa/continual-learning-bench.git`.
+4. **`texasholdem` import error during smoke test.** Run
+   `!pip install --ignore-requires-python texasholdem==0.11.0`.
+5. **Eval hangs after "vLLM serving started".** vLLM took longer than the
+   600 s startup timeout. Check `!nvidia-smi` for memory pressure; if
+   another process is holding the GPU, restart the runtime.
 
 ## Local development
 
