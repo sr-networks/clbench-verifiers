@@ -37,6 +37,20 @@ logger = logging.getLogger(__name__)
 _clbench_imports: dict[str, Any] = {}
 
 
+def _default_seed_dataset():
+    """Minimal dataset for verifiers versions that require one on env init."""
+    row = {
+        "prompt": [{"role": "user", "content": "<begin clbench rollout>"}],
+        "answer": "",
+        "info": {"source": "clbench-verifiers-env-seed"},
+    }
+    try:
+        from datasets import Dataset  # type: ignore
+    except ImportError:
+        return [row]
+    return Dataset.from_list([row])
+
+
 def _load_clbench() -> dict[str, Any]:
     """Import clbench symbols on first use."""
     if _clbench_imports:
@@ -225,6 +239,12 @@ def _make_env_class():
             # is wrong or its extras are missing. Rollout-time tasks are fresh
             # instances built per-rollout in setup_state.
             self._validate_task()
+
+            # verifiers >=0.1.7 validates that every Environment has at least
+            # one dataset. CLBenchEnv generates the real first prompt in
+            # setup_state(), so this seed row is only there to satisfy that
+            # outer Environment contract.
+            kwargs.setdefault("dataset", _default_seed_dataset())
 
             super().__init__(
                 rubric=rubric,
