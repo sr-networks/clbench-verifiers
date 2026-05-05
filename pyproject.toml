@@ -23,7 +23,7 @@ train = [
     "transformers>=4.45",
     "accelerate>=0.34",
     "trl>=0.12",
-    "vllm>=0.6.3",
+    "vllm==0.10.2",
     "torch>=2.4",
     "datasets>=2.20",
     "wandb>=0.18",

@@ -26,8 +26,8 @@ echo ">> Installing verifiers + RL stack…"
 pip install -q "verifiers[all]==0.1.7"
 pip install -q "trl>=0.12" "transformers>=4.45" "accelerate>=0.34" "datasets>=2.20" "peft>=0.12"
 
-# vLLM is the slow one; pin a known-good version compatible with current TRL/verifiers.
-pip install -q "vllm>=0.6.3"
+# Verifiers 0.1.7's vf-vllm entrypoint imports vLLM's pre-0.20 server API.
+pip install -q "vllm==0.10.2"
 
 echo ">> Installing this glue package in editable mode…"
 # Dependencies are installed explicitly above. Use --no-deps here so pip does
