@@ -244,6 +244,8 @@ def train(cfg: TrainConfig) -> str:
 
     logger.info("Building model: %s (lora=%s)", cfg.model_name, cfg.use_lora)
     model, tokenizer = _build_model_and_tokenizer(cfg)
+    if not hasattr(model, "warnings_issued"):
+        model.warnings_issued = {}
 
     grpo_cfg = _build_grpo_config(cfg)
 
