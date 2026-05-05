@@ -1,0 +1,56 @@
+[project]
+name = "clbench-verifiers"
+version = "0.0.1"
+description = "Glue package: run Continual Learning Bench tasks as verifiers Environments for GRPO training."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "sr-networks" }]
+
+dependencies = [
+    "pydantic>=2.6",
+    "tqdm>=4.65",
+    # The bench itself. Installed from git so we don't depend on PyPI.
+    # The clbench pyproject pins requires-python>=3.13, so colab_setup.sh
+    # installs it with --ignore-requires-python; locally a 3.13 venv works too.
+    "cl-benchmark @ git+https://github.com/pgasawa/continual-learning-bench.git@main",
+]
+
+[project.optional-dependencies]
+# RL stack — heavy, only needed for training. Skip for env-only/eval use.
+train = [
+    "verifiers[all]>=0.1.7",
+    "transformers>=4.45",
+    "accelerate>=0.34",
+    "trl>=0.12",
+    "vllm>=0.6.3",
+    "torch>=2.4",
+    "datasets>=2.20",
+    "wandb>=0.18",
+]
+
+# Just the bench task we currently support
+poker = [
+    "texasholdem==0.11.0",
+]
+
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+clbv-train = "clbench_verifiers.train:main"
+clbv-eval = "clbench_verifiers.eval:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["clbench_verifiers*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
