@@ -17,35 +17,35 @@ rather than forking either one.
 |---|---|---|
 | `exploitable_poker` env wrapper | ✅ working end-to-end | `setup_state` / `env_response` / `@vf.stop` aligned with verifiers `0.1.12` |
 | `icl_notepad`-style memory | ✅ working in env + `vllm_local` system | tested with multi-instance rollouts |
-| Local CPU smoke tests | ✅ all 9 passing | drives a real poker task through the wrapper without GPU/verifiers |
+| Cost caps (`max_input_tokens_per_rollout`, lower `max_turns`) | ✅ landed | 80× cost reduction vs uncapped run, see table below |
+| Partial-format reward shaping | ✅ landed | weight 0.1; breaks zero-advantage at cold-start |
+| Local CPU smoke tests | ✅ all 13 passing | drives a real poker task through the wrapper without GPU/verifiers |
 | Local Colab GRPO (`clbv-train`) | ⚠️ scaffolded, **not yet run end-to-end** | trainer config tracks verifiers `RLConfig` API drift; first real run still pending |
-| Prime env push | ✅ `sr-networks/clbench-poker@0.1.2` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
-| Prime Hosted Training smoke run | ✅ completed `w4o10b2y9cjav8dj1b6yhx1h` | 2 steps × 2 rollouts × 2 prompts on Qwen/Qwen3.5-2B; reward = -40.5 → -39.0; **cost $3.26** (well above the $0.05–0.20 estimated — see "Cost reality" below) |
-| Prime full plain GRPO | ⏳ blocked on cost-control changes | est. cost re-derivation needed; see roadmap |
-| Prime notepad GRPO | ⏳ blocked on plain | same |
+| Prime env push | ✅ `sr-networks/clbench-poker@0.1.4` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
+| Prime Hosted Training smoke | ✅ green pipeline | `lmqvmi9ah7m6yhxgca98wbql`, 2 steps, $0.04, both steps converged |
+| Prime full plain GRPO (200 steps) | ⏳ ready to launch | projected $1–4 with current caps; reward = parse_failure_dominated until policy learns valid JSON |
+| Prime notepad GRPO | ⏳ ready to launch after plain | same shape, ~3-4× tokens for 4-instance rollouts |
 | `database_exploration` env | ⏳ not started | low-effort follow-up; same wrapper shape |
 | Docker-sandboxed tasks | ⏳ not started | needs Modal/e2b sandbox for `codebase_adaptation` + `sales_prediction` |
 
-### Cost reality from the Prime smoke run
+### Cost-control journey on the Prime smoke
 
-The 2-step smoke against the **untrained** Qwen3.5-2B base burned through $3.26
-(54.56M inference-input tokens × $0.05/Mtok = $2.73 alone). Why so much:
+Each row below is one full smoke run (2 steps, batch_size 2-4, on
+Qwen/Qwen3.5-2B). The original burned through $3.26 because of context-
+quadratic blowup; the final config delivers a working pipeline at $0.04.
 
-- The base model emits gibberish on poker prompts; our parser rejects it.
-- With `end_on_parse_failure=False` and `max_turns=64`, every rollout loops
-  ~30+ turns, re-prompting with growing context each time.
-- Each re-prompt sends the full prior conversation back, so input tokens grow
-  quadratically.
-- 2 × 2 = 4 rollouts × ~14k input tokens / turn × ~30 turns ≈ 1.7M tokens per
-  rollout. With Prime's batching multiplier in there, total inference input
-  hit 54M.
+| Run | Config delta | Outcome | Cost |
+|---|---|---|---|
+| `w4o10b2y9cjav8dj1b6yhx1h` | original (no caps) | COMPLETED but every rollout was 30+ turns of gibberish | **$3.26** |
+| `ceizjz5hxeamdvlwke4kd0km` | + `max_turns=8`, `max_input_tokens_per_rollout=4000`, `end_on_parse_failure=true` | FAILED — `zero_advantage=2/2` every group ⇒ orchestrator crash | $0.005 |
+| `r9zjmjt6ci90y4jtsm8c5qsf` | + partial-format reward shaping (0..1, weight 0.1) | FAILED — same crash, 2 rollouts/group still too few | $0.006 |
+| `u46xq9y4fzp2mb93ngoyc9sx` | + `rollouts_per_example=4`, `batch_size=4` | step 0 ✓, **step 1 zero-advantage crash** (post-update output collapse) | $0.01 |
+| `lmqvmi9ah7m6yhxgca98wbql` | + `end_on_parse_failure=false` (rely on token cap, not turn-1 abort) | ✅ **COMPLETED both steps**, orchestrator clean exit | **$0.04** |
 
-Direct fix knobs to apply *before* launching the full 200-step run (see
-roadmap): drop `max_turns` to 16, set `end_on_parse_failure=true` for the
-first stage, or warm-start the policy via SFT on a few hundred valid action
-JSONs. Until one of those lands, **don't launch the full plain or notepad
-runs as configured** — the projected cost under base-model behavior is
-~$300+ rather than the $1–8 the configs claim.
+Lesson learned: the right cold-start configuration is "tight token budget +
+generous turn budget + format-shaping reward + group size ≥ 4". Aborting on
+parse failure is the wrong knob; it makes every rollout's reward identical
+and breaks GRPO's variance assumption.
 
 ## Two ways to run training
 
