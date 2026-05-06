@@ -6,9 +6,15 @@ name = "clbench-poker-qwen3.5-2b-smoke"
 model = "Qwen/Qwen3.5-2B"
 
 # Tiny budget — enough to surface env-side errors without burning tokens.
+# rollouts_per_example=4 (not 2): GRPO computes advantage as
+# (reward - group_mean) / group_std. With only 2 rollouts per prompt and
+# an untrained base model, both rollouts often produce near-identical text
+# → identical reward → std = 0 → all advantages 0 → Prime's zero_advantage
+# filter rejects the batch and the orchestrator crashes after 3 retries.
+# 4 rollouts is the smallest group size where you reliably get variance.
 max_steps = 2
 batch_size = 2
-rollouts_per_example = 2
+rollouts_per_example = 4
 
 # Optional knobs uncomment if needed:
 # learning_rate = 1e-6
