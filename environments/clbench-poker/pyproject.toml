@@ -2,7 +2,7 @@
 name = "clbench-poker"
 description = "Continual Learning Bench `exploitable_poker` task as a verifiers MultiTurnEnv. Optional icl_notepad-style structured memory."
 tags = ["continual-learning", "tool-use", "memory", "poker", "train", "eval"]
-version = "0.1.5"
+version = "0.1.6"
 requires-python = ">=3.10"
 authors = [{ name = "sr-networks" }]
 license = { text = "Apache-2.0" }

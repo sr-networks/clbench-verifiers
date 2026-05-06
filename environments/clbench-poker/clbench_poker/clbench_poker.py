@@ -60,6 +60,7 @@ def load_environment(
     schema_hint_in_system: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
+    enable_guided_json: bool = True,
     **_unused: Any,
 ):
     """
@@ -90,4 +91,5 @@ def load_environment(
         schema_hint_in_system=schema_hint_in_system,
         use_notepad=use_notepad,
         notepad_max_chars=notepad_max_chars,
+        enable_guided_json=enable_guided_json,
     )

@@ -178,6 +178,7 @@ def build_clbench_env(
     end_on_parse_failure: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
+    enable_guided_json: bool = True,
     timeout_seconds: float | None = None,
     rubric_funcs: Optional[list[Callable]] = None,
 ):
@@ -248,6 +249,7 @@ def build_clbench_env(
         use_notepad=use_notepad,
         notepad_max_chars=notepad_max_chars,
         max_input_tokens_per_rollout=max_input_tokens_per_rollout,
+        enable_guided_json=enable_guided_json,
         rubric=rubric,
         max_turns=max_turns,
         timeout_seconds=timeout_seconds,
@@ -277,6 +279,7 @@ def _make_env_class():
             use_notepad: bool,
             notepad_max_chars: int,
             max_input_tokens_per_rollout: int,
+            enable_guided_json: bool,
             rubric,
             max_turns: int,
             timeout_seconds: float | None = None,
@@ -290,6 +293,7 @@ def _make_env_class():
             self.use_notepad = use_notepad
             self.notepad_max_chars = notepad_max_chars
             self.max_input_tokens_per_rollout = max_input_tokens_per_rollout
+            self.enable_guided_json = enable_guided_json
 
             if use_notepad and max_instances_per_rollout < 2:
                 logger.warning(
@@ -431,8 +435,47 @@ def _make_env_class():
             # smoke tests (which use a stand-in MultiTurnEnv that doesn't run
             # the full rollout pipeline).
             state["messages"] = list(state["prompt"])
+
+            # Inject guided_json into sampling_args so vLLM constrains the
+            # policy's output to valid JSON matching the response schema.
+            # This is the single biggest fix for cold-start training: without
+            # it, the policy can emit truncated/malformed JSON and most of the
+            # gradient signal goes to "fix syntax", not "play better poker".
+            if self.enable_guided_json and prompt_schema is not None:
+                self._inject_guided_json(state, prompt_schema)
+
             rs.instance_started = False
             return state
+
+        def _inject_guided_json(self, state, schema) -> None:
+            """Merge a guided_json schema into ``state["sampling_args"]``.
+
+            vLLM's OpenAI-compatible server accepts ``extra_body.guided_json``
+            (a JSON schema dict) and constrains generation accordingly. We
+            merge rather than replace so any sampling args from the trainer
+            (temperature, top_p, etc.) survive.
+            """
+            try:
+                schema_dict = schema.model_json_schema()
+            except Exception as exc:
+                logger.warning("guided_json: schema serialization failed: %s", exc)
+                return
+
+            sampling_args = state.get("sampling_args")
+            if not isinstance(sampling_args, dict):
+                sampling_args = {}
+            else:
+                sampling_args = dict(sampling_args)
+
+            extra_body = sampling_args.get("extra_body")
+            if not isinstance(extra_body, dict):
+                extra_body = {}
+            else:
+                extra_body = dict(extra_body)
+
+            extra_body["guided_json"] = schema_dict
+            sampling_args["extra_body"] = extra_body
+            state["sampling_args"] = sampling_args
 
         # NOTE: ``Environment.is_completed`` is ``@final`` and walks all
         # ``@vf.stop``-decorated methods to decide termination. We register

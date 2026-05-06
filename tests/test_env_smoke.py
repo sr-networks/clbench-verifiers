@@ -172,6 +172,7 @@ def test_env_drives_poker_task_smoke():
         use_notepad=False,
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -209,6 +210,7 @@ def test_env_handles_parse_failure():
         use_notepad=False,
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -275,6 +277,7 @@ def test_env_notepad_mode_persists_across_instances():
         use_notepad=True,
         notepad_max_chars=200,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=64,
     )
@@ -318,6 +321,7 @@ def test_env_notepad_truncates_oversized():
         use_notepad=True,
         notepad_max_chars=50,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -337,6 +341,81 @@ def test_env_notepad_truncates_oversized():
 
     rs = asyncio.run(go())
     assert len(rs.notepad) <= 50 + len("\n[... notepad truncated ...]") + 5
+
+
+def test_guided_json_injected_into_sampling_args():
+    """When enable_guided_json=True, setup_state must populate
+    state['sampling_args']['extra_body']['guided_json'] with the
+    response schema's JSON schema dict."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        enable_guided_json=True,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    async def go():
+        # Pre-populate sampling_args to confirm we merge rather than overwrite.
+        state = {"messages": [], "sampling_args": {"temperature": 0.7}}
+        await env.setup_state(state)
+        return state
+
+    state = asyncio.run(go())
+    sa = state.get("sampling_args")
+    assert isinstance(sa, dict)
+    assert sa.get("temperature") == 0.7, "must preserve pre-existing keys"
+    extra = sa.get("extra_body")
+    assert isinstance(extra, dict)
+    schema = extra.get("guided_json")
+    assert isinstance(schema, dict)
+    # exploitable_poker's PokerAction schema has these required fields.
+    assert "action" in (schema.get("properties") or {})
+    assert "thinking" in (schema.get("properties") or {})
+
+
+def test_guided_json_off_when_disabled():
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    async def go():
+        state = {"messages": []}
+        await env.setup_state(state)
+        return state
+
+    state = asyncio.run(go())
+    sa = state.get("sampling_args") or {}
+    extra = sa.get("extra_body") or {}
+    assert "guided_json" not in extra
 
 
 def test_latest_assistant_text_reads_reasoning_content():
@@ -360,6 +439,7 @@ def test_latest_assistant_text_reads_reasoning_content():
         use_notepad=False,
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -435,6 +515,7 @@ def test_env_records_best_format_score_per_rollout():
         use_notepad=False,
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -474,6 +555,7 @@ def test_input_token_budget_disabled_by_default_in_tests():
         use_notepad=False,
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -503,6 +585,7 @@ def test_input_token_budget_fires_when_exceeded():
         use_notepad=False,
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=1000,
+        enable_guided_json=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -538,4 +621,6 @@ if __name__ == "__main__":
     test_format_score_increases_with_partial_compliance()
     test_env_records_best_format_score_per_rollout()
     test_latest_assistant_text_reads_reasoning_content()
+    test_guided_json_injected_into_sampling_args()
+    test_guided_json_off_when_disabled()
     print("All smoke tests passed.")
