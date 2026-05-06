@@ -19,7 +19,11 @@ lora_alpha = 16
 [sampling]
 max_tokens = 1024
 temperature = 1.0
-# enable_thinking = false      # uncomment for non-reasoning rollouts
+# Qwen3.5 is a thinking model — without this, output goes to reasoning_content
+# and our env reads `content`. v0.1.5 of the env handles both fields, but
+# turning thinking off is still cheaper (no separate reasoning channel) and
+# matches the action-emission pattern at training and eval time.
+enable_thinking = false
 
 [[env]]
 id = "sr-networks/clbench-poker"

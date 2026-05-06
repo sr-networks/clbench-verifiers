@@ -606,18 +606,42 @@ def _make_env_class():
 
         @staticmethod
         def _latest_assistant_text(messages) -> str:
+            """
+            Return the most recent assistant message's text.
+
+            Thinking models (Qwen3.5, Nemotron, GPT-OSS at high effort) split
+            their output into ``content`` (final answer) and ``reasoning_content``
+            (chain of thought). Cold-start policies often dump *everything* in
+            ``reasoning_content`` and leave ``content`` null. We accept either —
+            and concatenate both when available — so the parser sees whatever
+            the model actually emitted.
+
+            We also handle OpenAI-style content blocks (``[{type: text, text: ...}]``).
+            """
             for msg in reversed(messages):
-                if msg.get("role") == "assistant":
-                    content = msg.get("content")
-                    if isinstance(content, str):
-                        return content
-                    if isinstance(content, list):
-                        # OpenAI-style content blocks.
-                        return "".join(
+                if msg.get("role") != "assistant":
+                    continue
+
+                parts: list[str] = []
+                content = msg.get("content")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+                elif isinstance(content, list):
+                    parts.append(
+                        "".join(
                             block.get("text", "")
                             for block in content
                             if isinstance(block, dict) and block.get("type") == "text"
                         )
+                    )
+
+                reasoning = msg.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    parts.append(reasoning)
+
+                joined = "\n".join(p for p in parts if p)
+                if joined:
+                    return joined
             return ""
 
     return _CLBenchEnv

@@ -16,6 +16,10 @@ lora_alpha = 16
 [sampling]
 max_tokens = 1024
 temperature = 1.0
+# Qwen3.5 thinking-model channel routing — see prime_qwen3_5_2b.toml for the
+# rationale. With notepad mode the policy is already structured-output-heavy,
+# so a separate reasoning channel is doubly redundant.
+enable_thinking = false
 
 [[env]]
 id = "sr-networks/clbench-poker"

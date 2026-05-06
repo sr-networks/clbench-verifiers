@@ -339,6 +339,63 @@ def test_env_notepad_truncates_oversized():
     assert len(rs.notepad) <= 50 + len("\n[... notepad truncated ...]") + 5
 
 
+def test_latest_assistant_text_reads_reasoning_content():
+    """
+    Thinking models (Qwen3.5, Nemotron) put output in `reasoning_content`
+    not `content`. The env must read both so cold-start policies don't appear
+    to be emitting empty text.
+    """
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    # Empty content but JSON in reasoning_content — must be picked up.
+    msgs_reasoning_only = [
+        {"role": "user", "content": "play"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": '{"thinking":"x","action":"FOLD"}',
+        },
+    ]
+    text = env._latest_assistant_text(msgs_reasoning_only)
+    assert "FOLD" in text
+
+    # Both populated → joined (so parser sees whatever the model wrote).
+    msgs_both = [
+        {"role": "user", "content": "play"},
+        {
+            "role": "assistant",
+            "content": "final answer",
+            "reasoning_content": "thinking out loud",
+        },
+    ]
+    text2 = env._latest_assistant_text(msgs_both)
+    assert "final answer" in text2 and "thinking out loud" in text2
+
+    # Plain content path still works.
+    msgs_content_only = [
+        {"role": "user", "content": "play"},
+        {"role": "assistant", "content": '{"action":"CALL"}'},
+    ]
+    assert "CALL" in env._latest_assistant_text(msgs_content_only)
+
+
 def test_format_score_increases_with_partial_compliance():
     """Gibberish < {-only < schema-field-mention < parsed."""
     from pydantic import BaseModel
@@ -480,4 +537,5 @@ if __name__ == "__main__":
     test_input_token_budget_fires_when_exceeded()
     test_format_score_increases_with_partial_compliance()
     test_env_records_best_format_score_per_rollout()
+    test_latest_assistant_text_reads_reasoning_content()
     print("All smoke tests passed.")
