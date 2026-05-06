@@ -1,6 +1,9 @@
 # Prime Hosted Training — Qwen3.5-2B on exploitable_poker (plain GRPO).
 #
-# Cost estimate: ~$1.20–$1.80 for 200 steps × 8 rollouts × ~5 turns × ~1k tokens.
+# Cost estimate: ~$5–$15 for 200 steps × 8 rollouts × ~3-6 turns × bounded
+# tokens. The smoke run on the same env converged at ~$0.04 / 2 steps; this
+# scales with steps × rollouts × turn-length, which grows once the policy
+# produces valid actions and full poker hands play out.
 # Pricing source: `prime train models --output json` shows
 # Qwen/Qwen3.5-2B at $0.15 per million training tokens.
 
@@ -20,11 +23,13 @@ temperature = 1.0
 
 [[env]]
 id = "sr-networks/clbench-poker"
-# Cold-start defaults: hard caps on rollout length so the first ~50 steps
-# (when the base model still emits unparseable text frequently) stay cheap.
-# Raise max_turns to 16-32 and set end_on_parse_failure=false once the policy
-# is producing valid JSON ≥90% of the time.
-args = { max_instances_per_rollout = 1, max_turns = 12, max_input_tokens_per_rollout = 6000, end_on_parse_failure = true, task_kwargs = { num_instances = 5, opponent_policy = "calling_station", seed = 0 } }
+# Lessons baked in from the smoke runs:
+#   - max_input_tokens_per_rollout is the right cost guard, NOT
+#     end_on_parse_failure (that flag eliminates reward variance during
+#     cold-start and makes GRPO's zero_advantage filter trip).
+#   - Allow re-prompts so different rollouts in the same group naturally
+#     diverge, giving GRPO advantage variance.
+args = { max_instances_per_rollout = 1, max_turns = 12, max_input_tokens_per_rollout = 6000, end_on_parse_failure = false, task_kwargs = { num_instances = 5, opponent_policy = "calling_station", seed = 0 } }
 
 # Optional: light validation every 10 steps.
 [val]
