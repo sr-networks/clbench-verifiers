@@ -43,6 +43,24 @@ async def mean_instance_reward(*, state=None, **_kwargs) -> float:
     return sum(rewards) / len(rewards) if rewards else 0.0
 
 
+async def final_instance_reward(*, state=None, **_kwargs) -> float:
+    """Reward of the *last* completed instance in this rollout.
+
+    Useful for memory-augmented training where the policy sets up earlier
+    instances primarily to make the final instance succeed (the notepad /
+    history-wipe configuration). Weighting this > 0 gives every token in
+    the rollout (including notepad-write tokens in early instances) credit
+    proportional to the final outcome.
+
+    Returns 0.0 if no instances completed.
+    """
+    rs = _get_state(state)
+    if rs is None or not rs.instance_outcomes:
+        return 0.0
+    last = rs.instance_outcomes[-1]
+    return float(last.reward) if last.reward is not None else 0.0
+
+
 def make_parse_failure_penalty(penalty_per_failure: float) -> RewardFn:
     """Factory: scalar penalty applied per parse failure observed in the rollout."""
 
@@ -91,25 +109,29 @@ def build_clbench_rubric(
     *,
     parse_failure_penalty: float = -1.0,
     format_shaping_weight: float = 0.1,
+    mean_instance_reward_weight: float = 1.0,
+    final_instance_reward_weight: float = 0.0,
     extra_funcs: Optional[list[RewardFn]] = None,
 ):
     """
     Build a verifiers ``Rubric`` for CLBench.
 
     Reward components (weights in parentheses):
-      - ``mean_instance_reward`` (1.0) — the real task reward.
+      - ``mean_instance_reward`` (``mean_instance_reward_weight``, default 1.0) —
+        mean per-instance reward across all completed instances.
+      - ``final_instance_reward`` (``final_instance_reward_weight``, default 0.0) —
+        only the final instance's reward. Use this for memory-augmented
+        training where early instances primarily exist to set up the last
+        one (notepad mode). Set ``mean_instance_reward_weight=0`` and
+        ``final_instance_reward_weight=1`` for pure last-instance credit.
       - ``parse_failure_penalty`` (1.0) — weighted -penalty × #parse failures.
       - ``best_format_score`` (``format_shaping_weight``, default 0.1) — small
-        positive shaping: a 0..1 score for "did the output look like the
-        schema?". Lets cold-start GRPO have advantage variance on groups
-        where no rollout fully parses. Set the weight to 0 once your
-        policy emits valid JSON reliably.
+        positive shaping for cold-start.
       - Diagnostics (weight 0): ``num_instances_completed``,
         ``num_notepad_updates``, ``notepad_length_chars``.
 
     The Rubric API is imported lazily so this module can be used in tests
-    without verifiers installed (the rubric will only be needed at training
-    time anyway).
+    without verifiers installed.
     """
     try:
         import verifiers as vf  # type: ignore
@@ -118,19 +140,21 @@ def build_clbench_rubric(
 
     funcs: list[RewardFn] = [
         mean_instance_reward,
+        final_instance_reward,
         make_parse_failure_penalty(parse_failure_penalty),
-        best_format_score,          # cold-start shaping (small weight)
-        num_instances_completed,    # diagnostic; weight 0
-        num_notepad_updates,        # diagnostic; weight 0
-        notepad_length_chars,       # diagnostic; weight 0
+        best_format_score,
+        num_instances_completed,
+        num_notepad_updates,
+        notepad_length_chars,
     ]
     if extra_funcs:
         funcs.extend(extra_funcs)
 
     weights = [
-        1.0,                         # mean_instance_reward
+        mean_instance_reward_weight,
+        final_instance_reward_weight,
         1.0,                         # parse_failure_penalty
-        format_shaping_weight,       # best_format_score
+        format_shaping_weight,
         0.0, 0.0, 0.0,              # diagnostics
     ] + [1.0] * len(extra_funcs or [])
     return vf.Rubric(funcs=funcs, weights=weights)

@@ -178,6 +178,9 @@ def build_clbench_env(
     end_on_parse_failure: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
+    clear_history_between_instances: bool = False,
+    final_instance_reward_weight: float = 0.0,
+    mean_instance_reward_weight: float = 1.0,
     enable_guided_json: bool = True,
     timeout_seconds: float | None = None,
     rubric_funcs: Optional[list[Callable]] = None,
@@ -238,6 +241,8 @@ def build_clbench_env(
     rubric = build_clbench_rubric(
         parse_failure_penalty=parse_failure_penalty,
         format_shaping_weight=format_shaping_weight,
+        mean_instance_reward_weight=mean_instance_reward_weight,
+        final_instance_reward_weight=final_instance_reward_weight,
         extra_funcs=rubric_funcs or [],
     )
     return CLBenchEnv(
@@ -249,6 +254,7 @@ def build_clbench_env(
         use_notepad=use_notepad,
         notepad_max_chars=notepad_max_chars,
         max_input_tokens_per_rollout=max_input_tokens_per_rollout,
+        clear_history_between_instances=clear_history_between_instances,
         enable_guided_json=enable_guided_json,
         rubric=rubric,
         max_turns=max_turns,
@@ -279,6 +285,7 @@ def _make_env_class():
             use_notepad: bool,
             notepad_max_chars: int,
             max_input_tokens_per_rollout: int,
+            clear_history_between_instances: bool,
             enable_guided_json: bool,
             rubric,
             max_turns: int,
@@ -293,6 +300,7 @@ def _make_env_class():
             self.use_notepad = use_notepad
             self.notepad_max_chars = notepad_max_chars
             self.max_input_tokens_per_rollout = max_input_tokens_per_rollout
+            self.clear_history_between_instances = clear_history_between_instances
             self.enable_guided_json = enable_guided_json
 
             if use_notepad and max_instances_per_rollout < 2:
@@ -495,6 +503,59 @@ def _make_env_class():
         # now flows from `[sampling.extra_body.guided_json]` in the Prime
         # training TOML, with `state["sampling_args"]` injection as a backup
         # for non-Prime callers.
+
+        async def get_prompt_messages(self, state):
+            """
+            Override to optionally wipe within-instance conversation history
+            at instance boundaries (CLBench's `icl_notepad` semantics).
+
+            With ``clear_history_between_instances=True``, when a turn
+            completes an instance, the next turn's prompt becomes
+            ``[system_message, instance_N+1_first_user_message]`` — the
+            notepad (if enabled) is the only thing carrying state forward.
+            Without the flag, the verifiers default applies: every prior
+            turn's history accumulates in context (CLBench's plain `icl`).
+            """
+            if not self.clear_history_between_instances:
+                return await super().get_prompt_messages(state)
+
+            if not state.get("trajectory"):
+                return state["prompt"]
+
+            from verifiers.utils.message_utils import (  # type: ignore
+                concat_messages,
+                maybe_normalize_messages,
+            )
+
+            rs: Optional[CLBenchRolloutState] = state.get("clbench")
+            prev_step = state["trajectory"][-1]
+            prev_messages = concat_messages([prev_step["prompt"], prev_step["completion"]])
+
+            instances_before = rs.instances_completed if rs is not None else 0
+
+            new_user_msgs = await self.env_response(prev_messages, state)
+            new_user_msgs = maybe_normalize_messages(
+                new_user_msgs, field_name="env_response"
+            )
+
+            instance_just_completed = (
+                rs is not None and rs.instances_completed > instances_before
+            )
+
+            if instance_just_completed and rs is not None and not rs.finished:
+                # Build a fresh prompt: only the system message survives the
+                # boundary; the new user message already includes the notepad
+                # (env_response prepends it via _build_user_message when
+                # instance_started=True).
+                system_msgs = [
+                    m for m in state["prompt"]
+                    if isinstance(m, dict) and m.get("role") == "system"
+                ]
+                if system_msgs:
+                    return concat_messages([system_msgs, new_user_msgs])
+
+            # Default path: same as the parent's get_prompt_messages.
+            return concat_messages([prev_messages, new_user_msgs])
 
         # NOTE: ``Environment.is_completed`` is ``@final`` and walks all
         # ``@vf.stop``-decorated methods to decide termination. We register

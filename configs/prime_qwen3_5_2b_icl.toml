@@ -1,0 +1,67 @@
+# Prime Hosted Training — Qwen3.5-2B on exploitable_poker (ICL baseline).
+#
+# This is the "in-context learning across instances" baseline corresponding to
+# CLBench's `icl` system: each rollout is a sequence of N hands; the policy
+# sees the raw conversation history of all prior hands when making decisions
+# in the current hand. No notepad, no curation — just full history in context.
+#
+# This is the baseline against which a memory-augmented system has to win.
+# We run this BEFORE the notepad config so we have a meaningful comparison
+# point: does writing curated notes outperform raw-history ICL?
+#
+# Cost estimate: ~3-4× the plain (single-hand) run. 4 hands per rollout,
+# growing context, more turns per rollout. Budget ~$15-25 for 200 steps.
+
+name = "clbench-poker-qwen3.5-2b-icl"
+model = "Qwen/Qwen3.5-2B"
+
+max_steps = 200
+batch_size = 8
+rollouts_per_example = 8
+learning_rate = 1e-6
+lora_alpha = 16
+
+[sampling]
+max_tokens = 1024
+temperature = 1.0
+enable_thinking = false
+
+# Constrained decoding via vLLM guided_json — same schema as the plain
+# config since the action shape doesn't change in ICL mode (no notepad field).
+[sampling.extra_body.guided_json]
+type = "object"
+title = "PokerAction"
+description = "Structured poker action response."
+required = ["thinking", "action"]
+
+[sampling.extra_body.guided_json.properties.thinking]
+type = "string"
+title = "Thinking"
+description = "Your reasoning about the hand situation and why you chose this action"
+
+[sampling.extra_body.guided_json.properties.action]
+type = "string"
+title = "Action"
+description = "One of: FOLD, CALL, CHECK, RAISE"
+
+[sampling.extra_body.guided_json.properties.amount]
+title = "Amount"
+description = "Raise amount (only required for RAISE); leave null otherwise"
+anyOf = [{ type = "integer" }, { type = "null" }]
+
+[[env]]
+id = "sr-networks/clbench-poker"
+# 4-hand rollouts. clear_history_between_instances stays at its default
+# (False) so the policy sees the full multi-hand conversation history —
+# this is the "raw ICL" baseline. Notepad disabled. max_input_tokens raised
+# to fit 4 hands of growing context.
+args = { max_instances_per_rollout = 4, max_turns = 32, max_input_tokens_per_rollout = 16000, end_on_parse_failure = false, use_notepad = false, task_kwargs = { num_instances = 4, opponent_policy = "calling_station", seed = 0 } }
+
+[val]
+num_examples = 8
+rollouts_per_example = 1
+interval = 10
+
+# [wandb]
+# project = "clbench-verifiers"
+# name = "qwen3.5-2b-poker-icl"

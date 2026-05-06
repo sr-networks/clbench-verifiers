@@ -60,6 +60,9 @@ def load_environment(
     schema_hint_in_system: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
+    clear_history_between_instances: bool = False,
+    final_instance_reward_weight: float = 0.0,
+    mean_instance_reward_weight: float = 1.0,
     enable_guided_json: bool = True,
     **_unused: Any,
 ):
@@ -91,5 +94,8 @@ def load_environment(
         schema_hint_in_system=schema_hint_in_system,
         use_notepad=use_notepad,
         notepad_max_chars=notepad_max_chars,
+        clear_history_between_instances=clear_history_between_instances,
+        final_instance_reward_weight=final_instance_reward_weight,
+        mean_instance_reward_weight=mean_instance_reward_weight,
         enable_guided_json=enable_guided_json,
     )

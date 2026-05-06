@@ -173,6 +173,7 @@ def test_env_drives_poker_task_smoke():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -211,6 +212,7 @@ def test_env_handles_parse_failure():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -278,6 +280,7 @@ def test_env_notepad_mode_persists_across_instances():
         notepad_max_chars=200,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=64,
     )
@@ -322,6 +325,7 @@ def test_env_notepad_truncates_oversized():
         notepad_max_chars=50,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -363,6 +367,7 @@ def test_guided_json_injected_into_sampling_args():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=True,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -403,6 +408,7 @@ def test_guided_json_off_when_disabled():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -440,6 +446,7 @@ def test_latest_assistant_text_reads_reasoning_content():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -474,6 +481,28 @@ def test_latest_assistant_text_reads_reasoning_content():
         {"role": "assistant", "content": '{"action":"CALL"}'},
     ]
     assert "CALL" in env._latest_assistant_text(msgs_content_only)
+
+
+def test_final_instance_reward_returns_last_outcome():
+    """final_instance_reward should return the last completed instance's reward,
+    independent of what the mean is."""
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+    from clbench_verifiers.rubric import final_instance_reward
+
+    rs = SimpleNamespace(
+        instance_outcomes=[
+            SimpleNamespace(reward=-1.0),
+            SimpleNamespace(reward=-2.0),
+            SimpleNamespace(reward=+5.0),  # final
+        ]
+    )
+    state = {"clbench": rs}
+    val = _asyncio.run(final_instance_reward(state=state))
+    assert val == 5.0
+
+    empty = {"clbench": SimpleNamespace(instance_outcomes=[])}
+    assert _asyncio.run(final_instance_reward(state=empty)) == 0.0
 
 
 def test_format_score_increases_with_partial_compliance():
@@ -516,6 +545,7 @@ def test_env_records_best_format_score_per_rollout():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -556,6 +586,7 @@ def test_input_token_budget_disabled_by_default_in_tests():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=0,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -586,6 +617,7 @@ def test_input_token_budget_fires_when_exceeded():
         notepad_max_chars=4000,
         max_input_tokens_per_rollout=1000,
         enable_guided_json=False,
+        clear_history_between_instances=False,
         rubric=_Rubric(),
         max_turns=8,
     )
@@ -623,4 +655,5 @@ if __name__ == "__main__":
     test_latest_assistant_text_reads_reasoning_content()
     test_guided_json_injected_into_sampling_args()
     test_guided_json_off_when_disabled()
+    test_final_instance_reward_returns_last_outcome()
     print("All smoke tests passed.")
