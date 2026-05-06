@@ -11,54 +11,104 @@ system, and two entry points). Both upstream repos move fast and have
 different release cadences, so we keep the integration as a third-party shim
 rather than forking either one.
 
-## Status (2026-05-06)
+## Status (2026-05-06, evening)
 
 | Component | State | Notes |
 |---|---|---|
 | `exploitable_poker` env wrapper | ✅ working end-to-end | `setup_state` / `env_response` / `@vf.stop` aligned with verifiers `0.1.12`; reads `content` AND `reasoning_content` so thinking models like Qwen3.5 are handled correctly |
-| `icl_notepad`-style memory | ✅ working in env + `vllm_local` system | tested with multi-instance rollouts |
-| Cost caps (`max_input_tokens_per_rollout`, lower `max_turns`) | ✅ landed | ~80× cost reduction vs uncapped run, see table below |
+| Cost caps (`max_input_tokens_per_rollout`, lower `max_turns`) | ✅ landed | ~80× cost reduction vs uncapped run |
 | Partial-format reward shaping | ✅ landed | weight 0.1; breaks zero-advantage at cold-start |
-| Local CPU smoke tests | ✅ all 14 passing | drives a real poker task through the wrapper without GPU/verifiers; covers reasoning_content and format-score paths |
-| Local Colab GRPO (`clbv-train`) | ⚠️ scaffolded, **not yet run end-to-end** | trainer config tracks verifiers `RLConfig` API drift; first real run still pending |
-| Prime env push | ✅ `sr-networks/clbench-poker@0.1.8` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
-| Constrained decoding (`guided_json`) | ✅ landed via `[sampling.extra_body.guided_json]` | `zco930bwwpqgjd2cm3hxj80v`: parse_failure_penalty 0.0, format_score 1.0, instance completion 1.0, **first positive step reward (+0.10)** |
-| Prime Hosted Training smoke | ✅ green pipeline | `zco930bwwpqgjd2cm3hxj80v`: 2 steps × 4 rollouts, all parse, all complete, $0.04 |
-| Prime full plain GRPO (200 steps) | ⏳ ready to relaunch on the new clean signal | `p8hx0n3n5gxu0dbjs5s7f4nc` ran without guided_json and showed no learning trend ($5.59) |
-| Prime notepad GRPO | ⏳ ready to launch after plain | notepad config now ships with the matching schema-aware `guided_json` block |
+| Constrained decoding (`guided_json`) | ✅ landed via `[sampling.extra_body.guided_json]` (v0.1.8) | parse_failure_penalty drops to 0; +0.56 chip/hand vs the broken-extraction baseline |
+| Per-instance history wipe (`clear_history_between_instances`) | ✅ landed (v0.1.9) | overrides `get_prompt_messages` so notepad mode actually requires the notepad — see "memory experiments" below |
+| Last-instance reward weighting (`final_instance_reward_weight`) | ✅ landed (v0.1.9) | Lets us train pure last-hand objective so memory writes get clean credit |
+| Local CPU smoke tests | ✅ all 18 passing | parser, notepad, format-score, guided_json, final-instance reward, reasoning_content |
+| Prime env push | ✅ `sr-networks/clbench-poker@0.1.9` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
+| Prime full plain GRPO (200 steps, single hand/rollout) | ✅ completed | `g0g0j6hkxuoct7ipyd8faaau`: $4.59, mean reward -1.27 (vs -1.83 in pre-guided run); +0.56/hand uplift over the broken-extraction run, **but no within-run learning trend** (slope -0.0025/step) |
+| Prime ICL baseline (200 steps, 4 hands/rollout, no notepad) | ⏳ in flight | `ktr3ksy46hxljeicgboqrnq4`; tests if multi-hand context alone is useful before we add notepad on top |
+| Prime notepad GRPO (4 hands/rollout, history wiped, last-instance reward) | ⏳ queued after ICL baseline lands | notepad-config v0.1.9 |
+| Local Colab GRPO (`clbv-train`) | ⚠️ scaffolded, not yet run end-to-end | first real Colab run still pending |
 | `database_exploration` env | ⏳ not started | low-effort follow-up; same wrapper shape |
 | Docker-sandboxed tasks | ⏳ not started | needs Modal/e2b sandbox for `codebase_adaptation` + `sales_prediction` |
+
+### What we're actually training (and what CLBench measures)
+
+CLBench scores systems on two things: **aggregate reward** across a
+sequence of N task instances (e.g., 120 poker hands), and **continual
+gain** — `aggregate_reward(stateful) − aggregate_reward(reset_each_instance)`,
+i.e. how much memory across instances improved performance.
+
+The crucial piece is that the *continual gain* is what makes the
+benchmark non-trivial. For our task pick (`exploitable_poker` against the
+`calling_station` opponent) there is a learnable opponent-pattern that a
+memory-augmented system should exploit better than a no-memory one.
+
+Our **plain config** (`prime_qwen3_5_2b.toml`) trains with one hand per
+rollout and a fixed seed, so all 1,600 training hands are basically the
+same scenario. That:
+- proves the pipeline (env wrapper, reward shape, cost caps, guided_json),
+- delivers a measurable single-hand uplift,
+- but does **not** engage with the continual-learning question at all —
+  the policy never sees more than one hand at a time.
+
+The **ICL baseline** (`prime_qwen3_5_2b_icl.toml`, currently running)
+moves to 4 hands per rollout with full conversation history kept across
+hands. That's the upstream `icl` system in CLBench's leaderboard. It
+tells us whether GRPO+ICL alone (no curated memory, just raw history)
+already beats single-hand training.
+
+The **notepad config** (`prime_qwen3_5_2b_notepad.toml`, queued) is the
+memory-augmented experiment: 4 hands per rollout, `clear_history_between_instances=true`
+so within-hand history is wiped at each boundary and only the notepad
+survives, plus `final_instance_reward_weight=1.0` so all earlier-hand
+tokens (including notepad writes) get their advantage from the **last
+hand's** outcome.
+
+### Memory experiments — design notes
+
+Two non-obvious things came up while wiring this up:
+
+1. **Verifiers' default rollout keeps full history within a multi-instance
+   rollout.** If we just turned on `use_notepad=true` without history-wiping,
+   the model would see *both* the notepad *and* the raw conversation from
+   prior hands, making the notepad redundant. The new `clear_history_between_instances`
+   flag overrides `get_prompt_messages` to wipe the within-rollout history at
+   each instance boundary; this matches CLBench's upstream `icl_notepad`
+   semantics (only the notepad survives). The flag defaults to `False`, so
+   plain ICL multi-instance runs work too.
+2. **GRPO advantage is per-rollout, not per-turn.** With 4 hands per rollout
+   and `final_instance_reward_weight=1.0`, every action token in instances
+   1–3 (including the `notepad_update` writes) gets credit/blame proportional
+   to instance 4's chip outcome. This is the cleanest credit-assignment for
+   "did your earlier-hand notes help the last hand?". The default
+   (`mean_instance_reward_weight=1.0`, `final_instance_reward_weight=0.0`)
+   preserves the old behavior of averaging across all instances.
 
 ### Cost is controlled. Learning is the next frontier.
 
 Cost control was the explicit goal of the first push, and it's solved:
 the original uncapped 2-step smoke burned **$3.26** on 30+-turn gibberish
-loops; the current-config 2-step smoke costs **$0.05** and runs to
+loops; the current-config 2-step smoke costs **$0.04** and runs to
 completion with rollouts that actually finish poker hands. A 200-step
-plain run (8 rollouts/step) lands somewhere around **$2–4**, predictable
-and capped.
+plain run lands at **$4.59** — predictable and capped.
 
-What we *also* learned in the process is that a green pipeline isn't the
-same as a learning pipeline. The current 200-step run's reward keeps
-oscillating around -1.8 with no upward trend through ~90 steps. Two real
-issues remain:
+But the 200-step plain GRPO run shows **no within-run learning trend**:
+mean reward -1.27 (peak window -1.06 around step 75-99, late drift to
+-1.42 by step 199). Compared to the same config without guided_json
+(-1.83 across all windows), guided_json delivered a clean +0.56 chip/hand
+absolute uplift, but the gradient isn't pulling the policy reliably
+upward over training. Likely structural causes:
 
-1. **Mid-output truncation under `max_tokens=1024`.** Qwen3.5-2B is verbose;
-   it spends its entire output budget on the `thinking` field, leaving the
-   `action` / `amount` fields off the end. The JSON is incomplete, the
-   action either fails to parse or fails task validation, and the rollout
-   wastes turns re-prompting until the input-token cap fires.
-2. **`num_instances_completed` is a free lunch.** It exists as a weight-0
-   diagnostic. When a rollout never finishes a hand, `mean_instance_reward`
-   is treated as `0` (no instances to average over), which is *better than*
-   the typical `−1` of an actual losing hand. A policy that emits valid-
-   shape JSON without playing therefore beats a policy that plays badly.
-   This is a reward-hacking attractor reachable from the current init.
+1. **Single-scenario training distribution.** Same fixed seed every
+   rollout = same opening hand replayed 1,600 times. The policy is
+   over-specifying on one hand instead of learning poker.
+2. **Reward variance dominates the gradient at LR=1e-6 on LoRA.** Real
+   poker hands swing -10 to +10 chips; a 0.3-chip EV improvement is
+   buried in noise. Either bigger groups (16+ rollouts), lower LR, or
+   higher SNR shaping is needed.
 
-Both have one-line fixes; we landed cost control first because it was
-blocking us from finding these. The fixes — `max_tokens=2048` and
-weight-1 on `num_instances_completed` — are proposed but not yet shipped
-as of this README write.
+Both motivate the multi-instance experiments (broader distribution,
+lower-variance per-rollout-mean) and ultimately the notepad config
+(direct credit on the final-hand outcome).
 
 ### Cost-control journey
 
@@ -75,6 +125,8 @@ as of this README write.
 | `kwklvvrxoisl8bh4cbvb8pp5` | env-side `state["sampling_args"]["extra_body"]["guided_json"]` injection (v0.1.6) | constraint never reached vLLM; parse failures still ~3/turn | $0.06 |
 | `hlrfpn58m3secgdzlm61bld7` | `get_model_response` override forcing constraint per-call (v0.1.7) | broke Prime's TITO client path; orchestrator hung 11 min before crashing | $0.00 |
 | **`zco930bwwpqgjd2cm3hxj80v`** | guided_json via `[sampling.extra_body.guided_json]` in TOML (v0.1.8) | ✅ **parse_failure_penalty=0, instance completion 100%, step 1 reward +0.10** | **$0.04** |
+| `g0g0j6hkxuoct7ipyd8faaau` | **full 200-step plain GRPO on v0.1.8 (guided_json)** | ✅ COMPLETED 200/200; **mean reward -1.27** vs -1.83 in pre-guided run (+0.56/hand uplift); peak window -1.06 (steps 75-99); late drift to -1.42; **slope = -0.0025/step (no within-run trend)** | **$4.59** |
+| `ktr3ksy46hxljeicgboqrnq4` | ICL baseline: 4 hands/rollout, no notepad, history kept (v0.1.9) | ⏳ in flight — first multi-instance run | TBD |
 
 Lessons baked in:
 
@@ -88,6 +140,18 @@ Lessons baked in:
    reads both fields.
 3. A green pipeline is not a learning pipeline. Watch reward dynamics,
    not just cost.
+4. Constrained decoding (`guided_json`) is the right structural fix for
+   small-model JSON tool-use. With Prime, the load-bearing surface is
+   the TOML's `[sampling.extra_body.guided_json]` block — env-side
+   `state["sampling_args"]` injection and runtime `get_model_response`
+   overrides do *not* flow through Prime's TITO client path.
+5. Multi-instance memory experiments require **explicit history wiping**
+   in the env wrapper (verifiers concatenates by default). Without it,
+   the model has full prior-hand context and the notepad is decorative.
+6. For pure memory-augmented training, **last-instance reward weighting**
+   gives cleaner credit assignment than mean-instance: notepad-write
+   tokens in early hands get blamed/credited by the final-hand outcome,
+   not diluted by the noise of their own immediate hand.
 
 ## Two ways to run training
 
@@ -448,41 +512,46 @@ critical path before another full run is worth the spend.
 
 Now the open items, in order of how directly they unblock real learning:
 
-- [ ] 🔥 ⭐ **Penalize "didn't finish a hand".**
-  `num_instances_completed` is a weight-0 diagnostic. A rollout that emits
-  valid-shape JSON without ever finishing an instance gets
-  `mean_instance_reward = 0`, which is *better* than playing badly. Bump
-  the weight to ~1.0 in `clbench_verifiers/rubric.py::build_clbench_rubric`
-  so the model can't reward-hack the metric. Add a smoke test that fails
-  if a rollout with zero completions outscores one that completed and lost.
-- [ ] 🔥 ⭐ **Bump `max_tokens` to 2048 in Prime configs.**
-  Qwen3.5-2B is verbose; with 1024 it spends the entire output budget on
-  the `thinking` field and never emits `action`/`amount`. Touches all three
-  `configs/prime_*.toml` `[sampling]` blocks. Trade-off: cost per rollout
-  ≈ 2× — still in our budget envelope.
 - [x] 🔥 **Constrained decoding via `guided_json`.** ([84d3312](https://github.com/sr-networks/clbench-verifiers/commit/84d3312))
   Configured via Prime's `[sampling.extra_body.guided_json]` TOML block (env
-  v0.1.8). Smoke `zco930bwwpqgjd2cm3hxj80v` confirms the constraint reaches
-  vLLM and the policy now produces fully valid JSON every turn. Two earlier
-  attempts (env-side `state["sampling_args"]` injection, runtime
-  `get_model_response` override) didn't make it through Prime's TITO client
-  path; the TOML-driven path does.
+  v0.1.8). Smoke `zco930bwwpqgjd2cm3hxj80v` confirmed the constraint reaches
+  vLLM; full plain run `g0g0j6hkxuoct7ipyd8faaau` showed +0.56 chip/hand
+  uplift over the broken-extraction run.
+- [x] 🔥 **Per-instance history wipe + last-instance reward.** ([3d09fbc](https://github.com/sr-networks/clbench-verifiers/commit/3d09fbc))
+  New env knob `clear_history_between_instances` (overrides
+  `get_prompt_messages` to wipe within-instance history at instance
+  boundaries) plus `final_instance_reward_weight`/`mean_instance_reward_weight`
+  rubric weights for clean credit assignment. Required for the notepad
+  config to actually be testing what it claims to test.
+- [ ] 🔥 ⭐ **Train on more diverse hand seeds.**
+  Currently `task_kwargs.seed=0` is shared across all rollouts in all
+  steps; the policy sees the same opening hand 1,600 times in a 200-step
+  training run. Threading a per-rollout seed into the env (or calling
+  `Poker(num_instances=N, seed=...)` with rotating seeds) would broaden
+  the training distribution. Cleanest fix to "no within-run learning trend"
+  hypothesis #1.
 - [ ] 🔥 🎯 **SFT bootstrap before GRPO.**
   Generate a few hundred valid `PokerAction` JSONs (random legal actions +
   short fake-thinking strings), SFT Qwen3.5-2B on them for 100–200 steps,
-  *then* GRPO. Cleanest fix to cold-start; alternative to constrained
-  decoding for environments where `guided_json` is unavailable.
+  *then* GRPO. Particularly useful for tasks without `guided_json` support,
+  and a cheap way to lift the model off the cold-start floor before RL.
+- [ ] ⭐ **Bump `max_tokens` to 2048 in Prime configs.**
+  Qwen3.5-2B is verbose; with 1024 it sometimes spends the entire output
+  budget on the `thinking` field. With guided_json on this matters less
+  (output is shape-bounded), but raising the limit removes another
+  spurious failure mode. Trade-off: cost per rollout ≈ 1.5× — still in
+  budget envelope.
 - [ ] ⭐ **Schema description tightening.**
   Add `description="Brief reasoning, ≤30 words"` (or similar) to the
   `thinking` field in CLBench's `PokerAction`. Smaller deltas are likely
-  but it's the cheapest way to discourage the rambling that hits
-  `max_tokens`. Upstream PR to `pgasawa/continual-learning-bench`.
+  but it's the cheapest way to discourage rambling. Upstream PR to
+  `pgasawa/continual-learning-bench`.
 - [ ] ⭐ **Per-turn rollout diagnostics in env state.**
   Track per-turn: output tokens, prompt-vs-completion ratio, time. Surface
   as weight-0 rubric components so they show up in
   `prime train metrics --output json` and we can spot regressions like
-  the "all thinking, no action" attractor without having to manually
-  inspect rollouts.
+  the "all thinking, no action" attractor without manually inspecting
+  rollouts.
 
 ### Phase B — More tasks
 
