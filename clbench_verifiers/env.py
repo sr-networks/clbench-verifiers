@@ -450,32 +450,82 @@ def _make_env_class():
         def _inject_guided_json(self, state, schema) -> None:
             """Merge a guided_json schema into ``state["sampling_args"]``.
 
-            vLLM's OpenAI-compatible server accepts ``extra_body.guided_json``
-            (a JSON schema dict) and constrains generation accordingly. We
-            merge rather than replace so any sampling args from the trainer
-            (temperature, top_p, etc.) survive.
+            See ``_apply_constraint`` for the actual merge logic; this just
+            persists into rollout state for paths that read sampling_args
+            from there.
+            """
+            sampling_args = state.get("sampling_args")
+            if not isinstance(sampling_args, dict):
+                sampling_args = {}
+            state["sampling_args"] = self._apply_constraint(dict(sampling_args), schema)
+
+        @staticmethod
+        def _apply_constraint(sampling_args: dict, schema) -> dict:
+            """Inject both vLLM-native (``extra_body.guided_json``) and
+            OpenAI-standard (``response_format``) JSON-mode constraints into a
+            sampling_args dict. We set both forms because Prime's hosted
+            inference pool may strip one and forward the other; whichever
+            survives, vLLM constrains generation to valid JSON.
             """
             try:
                 schema_dict = schema.model_json_schema()
             except Exception as exc:
                 logger.warning("guided_json: schema serialization failed: %s", exc)
-                return
-
-            sampling_args = state.get("sampling_args")
-            if not isinstance(sampling_args, dict):
-                sampling_args = {}
-            else:
-                sampling_args = dict(sampling_args)
+                return sampling_args
 
             extra_body = sampling_args.get("extra_body")
-            if not isinstance(extra_body, dict):
-                extra_body = {}
-            else:
-                extra_body = dict(extra_body)
-
+            extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
             extra_body["guided_json"] = schema_dict
             sampling_args["extra_body"] = extra_body
-            state["sampling_args"] = sampling_args
+
+            sampling_args["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__,
+                    "schema": schema_dict,
+                    "strict": True,
+                },
+            }
+            return sampling_args
+
+        async def get_model_response(
+            self,
+            state,
+            prompt,
+            client=None,
+            model=None,
+            tool_defs=None,
+            sampling_args=None,
+        ):
+            """
+            Override so we force-inject the guided_json / response_format
+            constraint regardless of who passes sampling_args in (the trainer,
+            the rollout caller, or our own setup_state). This is the only
+            code path that's actually load-bearing for Prime hosted training,
+            because the trainer can supply its own sampling_args at call time
+            and bypass state["sampling_args"].
+            """
+            if self.enable_guided_json:
+                rs = state.get("clbench") if isinstance(state, dict) else None
+                schema = getattr(rs, "prompt_schema", None) if rs is not None else None
+                if schema is None:
+                    # Fall back to whatever the env's task_schema is — better
+                    # than nothing if the rollout state isn't populated yet.
+                    schema = getattr(rs, "task_schema", None) if rs is not None else None
+                if schema is not None:
+                    base = sampling_args
+                    if base is None:
+                        base = state.get("sampling_args") if isinstance(state, dict) else None
+                    base = dict(base) if isinstance(base, dict) else {}
+                    sampling_args = self._apply_constraint(base, schema)
+            return await super().get_model_response(
+                state,
+                prompt,
+                client=client,
+                model=model,
+                tool_defs=tool_defs,
+                sampling_args=sampling_args,
+            )
 
         # NOTE: ``Environment.is_completed`` is ``@final`` and walks all
         # ``@vf.stop``-decorated methods to decide termination. We register
