@@ -74,13 +74,38 @@ async def notepad_length_chars(*, state=None, **_kwargs) -> float:
     return float(len(getattr(rs, "notepad", ""))) if rs else 0.0
 
 
+async def best_format_score(*, state=None, **_kwargs) -> float:
+    """
+    Best per-turn partial-format score (0..1). Used at small positive weight
+    so cold-start GRPO groups in which no rollout fully parses still get
+    advantage variance from "less bad" outputs vs "more bad" outputs.
+
+    Set the weight to 0 once your policy reliably produces valid JSON; this
+    component should be a tiny perturbation by then anyway.
+    """
+    rs = _get_state(state)
+    return float(getattr(rs, "best_format_score", 0.0)) if rs else 0.0
+
+
 def build_clbench_rubric(
     *,
     parse_failure_penalty: float = -1.0,
+    format_shaping_weight: float = 0.1,
     extra_funcs: Optional[list[RewardFn]] = None,
 ):
     """
     Build a verifiers ``Rubric`` for CLBench.
+
+    Reward components (weights in parentheses):
+      - ``mean_instance_reward`` (1.0) — the real task reward.
+      - ``parse_failure_penalty`` (1.0) — weighted -penalty × #parse failures.
+      - ``best_format_score`` (``format_shaping_weight``, default 0.1) — small
+        positive shaping: a 0..1 score for "did the output look like the
+        schema?". Lets cold-start GRPO have advantage variance on groups
+        where no rollout fully parses. Set the weight to 0 once your
+        policy emits valid JSON reliably.
+      - Diagnostics (weight 0): ``num_instances_completed``,
+        ``num_notepad_updates``, ``notepad_length_chars``.
 
     The Rubric API is imported lazily so this module can be used in tests
     without verifiers installed (the rubric will only be needed at training
@@ -89,12 +114,12 @@ def build_clbench_rubric(
     try:
         import verifiers as vf  # type: ignore
     except ImportError:  # pragma: no cover
-        # Return a minimal stand-in for environments without verifiers.
         return _MockRubric(parse_failure_penalty=parse_failure_penalty)
 
     funcs: list[RewardFn] = [
         mean_instance_reward,
         make_parse_failure_penalty(parse_failure_penalty),
+        best_format_score,          # cold-start shaping (small weight)
         num_instances_completed,    # diagnostic; weight 0
         num_notepad_updates,        # diagnostic; weight 0
         notepad_length_chars,       # diagnostic; weight 0
@@ -102,9 +127,12 @@ def build_clbench_rubric(
     if extra_funcs:
         funcs.extend(extra_funcs)
 
-    # The first two are real reward components; the next three are diagnostics
-    # logged each rollout but excluded from the reward (weight 0).
-    weights = [1.0, 1.0, 0.0, 0.0, 0.0] + [1.0] * len(extra_funcs or [])
+    weights = [
+        1.0,                         # mean_instance_reward
+        1.0,                         # parse_failure_penalty
+        format_shaping_weight,       # best_format_score
+        0.0, 0.0, 0.0,              # diagnostics
+    ] + [1.0] * len(extra_funcs or [])
     return vf.Rubric(funcs=funcs, weights=weights)
 
 

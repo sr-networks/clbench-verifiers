@@ -97,6 +97,44 @@ def _load_verifiers():
     return vf
 
 
+def _format_score(text: str, schema, *, parsed_ok: bool) -> float:
+    """
+    Heuristic 0..1 score: how close is ``text`` to a valid action JSON?
+
+    Used to break zero-advantage on cold-start GRPO groups where no rollout
+    fully parses. Awarded points (out of 1.0):
+
+    - 0.5 if the schema validates (full credit; in practice the rubric's
+      mean_instance_reward will dominate once parses happen).
+    - 0.2 if there is a ``{ ... }`` block.
+    - up to 0.3 prorated by how many of the schema's *required* field
+      names appear (case-insensitive) in the text.
+
+    Cheap and deliberately permissive so the gradient signal kicks in early.
+    """
+    if parsed_ok:
+        return 1.0
+    if not text:
+        return 0.0
+
+    score = 0.0
+    if "{" in text and "}" in text:
+        score += 0.2
+
+    fields: list[str] = []
+    if schema is not None:
+        try:
+            fields = list(schema.model_fields.keys())
+        except Exception:
+            fields = []
+    if fields:
+        text_low = text.lower()
+        hits = sum(1 for f in fields if f.lower() in text_low)
+        score += 0.3 * hits / len(fields)
+
+    return min(score, 0.5)
+
+
 @dataclass
 class CLBenchRolloutState:
     """Per-rollout state carried in verifiers' ``state`` dict."""
@@ -115,6 +153,11 @@ class CLBenchRolloutState:
     instance_started: bool = True  # next user-msg builder prepends notepad if True
     finished: bool = False
     last_error: Optional[str] = None
+    # Best per-turn "did the output look like the schema?" score in [0, 1].
+    # Updated on every assistant message; surfaced as a small-weight rubric
+    # component so cold-start GRPO gets advantage variance even when no
+    # rollout in the group manages to fully parse. See `_format_score`.
+    best_format_score: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +174,7 @@ def build_clbench_env(
     max_input_tokens_per_rollout: int = 8000,
     schema_hint_in_system: bool = True,
     parse_failure_penalty: float = -1.0,
+    format_shaping_weight: float = 0.1,
     end_on_parse_failure: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
@@ -192,6 +236,7 @@ def build_clbench_env(
 
     rubric = build_clbench_rubric(
         parse_failure_penalty=parse_failure_penalty,
+        format_shaping_weight=format_shaping_weight,
         extra_funcs=rubric_funcs or [],
     )
     return CLBenchEnv(
@@ -436,6 +481,11 @@ def _make_env_class():
             from .notepad import split_notepad_action
 
             parsed, error = parse_action(assistant_text, rs.prompt_schema)
+            # Update partial-format score for this turn (0..1). Provides reward
+            # variance during cold-start even when no rollout fully parses.
+            score = _format_score(assistant_text, rs.prompt_schema, parsed_ok=parsed is not None)
+            if score > rs.best_format_score:
+                rs.best_format_score = score
             if parsed is None:
                 rs.parse_failures += 1
                 rs.last_error = error

@@ -339,6 +339,67 @@ def test_env_notepad_truncates_oversized():
     assert len(rs.notepad) <= 50 + len("\n[... notepad truncated ...]") + 5
 
 
+def test_format_score_increases_with_partial_compliance():
+    """Gibberish < {-only < schema-field-mention < parsed."""
+    from pydantic import BaseModel
+    from clbench_verifiers.env import _format_score
+
+    class A(BaseModel):
+        action: str
+        amount: int = 0
+
+    s_garbage = _format_score("FOLD now", A, parsed_ok=False)
+    s_braces_only = _format_score("{ what }", A, parsed_ok=False)
+    s_one_field_only = _format_score('"action" goes here', A, parsed_ok=False)
+    s_two_fields_braces = _format_score('{ "action": x, "amount": y }', A, parsed_ok=False)
+    s_parsed = _format_score('{"action":"FOLD"}', A, parsed_ok=True)
+    assert s_garbage == 0.0
+    assert 0 < s_braces_only          # 0.2
+    assert 0 < s_one_field_only       # 0.15
+    assert s_two_fields_braces > max(s_braces_only, s_one_field_only)  # combined
+    assert s_parsed > s_two_fields_braces  # full parse beats partial
+    assert s_parsed == 1.0
+
+
+def test_env_records_best_format_score_per_rollout():
+    """env_response should bump rs.best_format_score on every assistant msg."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 2, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    async def go():
+        state = {"messages": []}
+        await env.setup_state(state)
+        # Looks-like-JSON gibberish — should produce a non-zero partial score.
+        # exploitable_poker schema fields are {thinking, action, amount}; this
+        # text has braces + the word "action" + the word "thinking" but isn't
+        # valid JSON.
+        state["messages"].append(
+            {"role": "assistant", "content": "{ thinking ... action ... }"}
+        )
+        await env.env_response(state["messages"], state)
+        rs = state["clbench"]
+        return rs.best_format_score
+
+    score = asyncio.run(go())
+    assert 0.0 < score < 1.0
+
+
 def test_input_token_budget_disabled_by_default_in_tests():
     """When the cap is set to 0, the @vf.stop must always return False."""
     cls = _build_local_env_class()
@@ -417,4 +478,6 @@ if __name__ == "__main__":
     test_env_notepad_truncates_oversized()
     test_input_token_budget_disabled_by_default_in_tests()
     test_input_token_budget_fires_when_exceeded()
+    test_format_score_increases_with_partial_compliance()
+    test_env_records_best_format_score_per_rollout()
     print("All smoke tests passed.")
