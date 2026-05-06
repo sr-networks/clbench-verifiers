@@ -323,10 +323,17 @@ def _make_env_class():
         # verifiers MultiTurnEnv hooks
         # ------------------------------------------------------------------
 
-        async def setup_state(self, state) -> None:
+        async def setup_state(self, state):
             """
-            Initialize per-rollout state: build the CLBench task, pull its
-            first Query, and seed the messages list with system + first user.
+            Initialize per-rollout state and seed ``state["prompt"]`` with the
+            CLBench task's first user-side messages.
+
+            The base ``Environment.init_state`` already populated
+            ``state["prompt"]`` from the dataset row before we get here. We
+            replace it with the actual task framing so the model never sees
+            the placeholder seed prompt.
+
+            Must return ``state`` — verifiers' rollout assigns the result back.
             """
             from .notepad import build_schema_with_notepad
 
@@ -348,23 +355,27 @@ def _make_env_class():
             )
             state["clbench"] = rs
 
-            messages = state.setdefault("messages", [])
-            if not messages or messages[0].get("role") != "system":
-                messages.insert(
-                    0,
-                    {"role": "system", "content": self._system_prompt(prompt_schema)},
-                )
-            messages.append(
-                self._build_user_message(
-                    query,
-                    prompt_schema=prompt_schema,
-                    notepad=rs.notepad,
-                    instance_started=True,
-                )
+            sys_msg = {"role": "system", "content": self._system_prompt(prompt_schema)}
+            user_msg = self._build_user_message(
+                query,
+                prompt_schema=prompt_schema,
+                notepad=rs.notepad,
+                instance_started=True,
             )
+            state["prompt"] = [sys_msg, user_msg]
+            # Mirror under ``state["messages"]`` for back-compat with the local
+            # smoke tests (which use a stand-in MultiTurnEnv that doesn't run
+            # the full rollout pipeline).
+            state["messages"] = list(state["prompt"])
             rs.instance_started = False
+            return state
 
-        async def is_completed(self, messages, state, **kwargs) -> bool:
+        # NOTE: ``Environment.is_completed`` is ``@final`` and walks all
+        # ``@vf.stop``-decorated methods to decide termination. We register
+        # our condition that way instead of overriding ``is_completed``.
+
+        @vf.stop
+        async def clbench_done(self, state, **kwargs) -> bool:
             rs: Optional[CLBenchRolloutState] = state.get("clbench")
             if rs is None:
                 return False

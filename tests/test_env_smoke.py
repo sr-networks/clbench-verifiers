@@ -103,6 +103,19 @@ def _build_local_env_class():
                 self.funcs = funcs or []
                 self.weights = weights or []
 
+        # @vf.stop is used to register termination conditions — for tests we
+        # treat it as an identity decorator (the standin never drives the
+        # real is_completed loop, so registration is a no-op).
+        @staticmethod
+        def stop(arg=None, **_kwargs):
+            if callable(arg):
+                return arg
+
+            def _wrap(func):
+                return func
+
+            return _wrap
+
     # Patch the module-level cache so _load_verifiers returns our standin.
     original_loader = env_mod._load_verifiers
     env_mod._load_verifiers = lambda: _StandinVF  # type: ignore
