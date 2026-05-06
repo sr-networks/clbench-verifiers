@@ -64,6 +64,7 @@ def load_environment(
     final_instance_reward_weight: float = 0.0,
     mean_instance_reward_weight: float = 1.0,
     enable_guided_json: bool = True,
+    dataset_size: int = 256,
     **_unused: Any,
 ):
     """
@@ -98,4 +99,5 @@ def load_environment(
         final_instance_reward_weight=final_instance_reward_weight,
         mean_instance_reward_weight=mean_instance_reward_weight,
         enable_guided_json=enable_guided_json,
+        dataset_size=dataset_size,
     )

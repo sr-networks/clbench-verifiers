@@ -483,6 +483,42 @@ def test_latest_assistant_text_reads_reasoning_content():
     assert "CALL" in env._latest_assistant_text(msgs_content_only)
 
 
+def test_dataset_seed_is_threaded_into_task_kwargs():
+    """state['info']['seed'] should override task_kwargs.seed in setup_state."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0, "opponent_policy": "calling_station"},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
+        clear_history_between_instances=False,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    async def go(seed):
+        state = {"messages": [], "info": {"seed": seed}}
+        await env.setup_state(state)
+        return state["clbench"].task
+
+    # Two rollouts with different seeds → different Poker tasks initialized.
+    t0 = asyncio.run(go(0))
+    t7 = asyncio.run(go(7))
+    # Poker stores its seed; check we threaded it through.
+    assert getattr(t0, "seed", None) == 0
+    assert getattr(t7, "seed", None) == 7
+
+
 def test_final_instance_reward_returns_last_outcome():
     """final_instance_reward should return the last completed instance's reward,
     independent of what the mean is."""
@@ -656,4 +692,5 @@ if __name__ == "__main__":
     test_guided_json_injected_into_sampling_args()
     test_guided_json_off_when_disabled()
     test_final_instance_reward_returns_last_outcome()
+    test_dataset_seed_is_threaded_into_task_kwargs()
     print("All smoke tests passed.")

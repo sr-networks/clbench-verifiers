@@ -37,18 +37,30 @@ logger = logging.getLogger(__name__)
 _clbench_imports: dict[str, Any] = {}
 
 
-def _default_seed_dataset():
-    """Minimal dataset for verifiers versions that require one on env init."""
-    row = {
-        "prompt": [{"role": "user", "content": "<begin clbench rollout>"}],
-        "answer": "",
-        "info": {"source": "clbench-verifiers-env-seed"},
-    }
+def _default_seed_dataset(num_rows: int = 256):
+    """
+    Dataset of varying seeds for per-step prompt diversity.
+
+    Each row carries a distinct ``info.seed`` that ``setup_state`` threads
+    into the task's ``task_kwargs.seed``. With this, the 8 rollouts within
+    a GRPO step share the same hand (proper group-relative advantage), but
+    each step trains on a different hand (the policy generalises across
+    scenarios). With a 1-row dataset every step would replay the same
+    hand — the bug we hit in earlier runs.
+    """
+    rows = [
+        {
+            "prompt": [{"role": "user", "content": f"<begin clbench rollout seed={i}>"}],
+            "answer": "",
+            "info": {"seed": i, "source": "clbench-verifiers-env-seed"},
+        }
+        for i in range(max(1, num_rows))
+    ]
     try:
         from datasets import Dataset  # type: ignore
     except ImportError:
-        return [row]
-    return Dataset.from_list([row])
+        return rows
+    return Dataset.from_list(rows)
 
 
 def _load_clbench() -> dict[str, Any]:
@@ -182,6 +194,7 @@ def build_clbench_env(
     final_instance_reward_weight: float = 0.0,
     mean_instance_reward_weight: float = 1.0,
     enable_guided_json: bool = True,
+    dataset_size: int = 256,
     timeout_seconds: float | None = None,
     rubric_funcs: Optional[list[Callable]] = None,
 ):
@@ -256,6 +269,7 @@ def build_clbench_env(
         max_input_tokens_per_rollout=max_input_tokens_per_rollout,
         clear_history_between_instances=clear_history_between_instances,
         enable_guided_json=enable_guided_json,
+        dataset_size=dataset_size,
         rubric=rubric,
         max_turns=max_turns,
         timeout_seconds=timeout_seconds,
@@ -290,6 +304,7 @@ def _make_env_class():
             rubric,
             max_turns: int,
             timeout_seconds: float | None = None,
+            dataset_size: int = 256,
             **kwargs,
         ):
             self.task_name = task_name
@@ -320,7 +335,7 @@ def _make_env_class():
             # one dataset. CLBenchEnv generates the real first prompt in
             # setup_state(), so this seed row is only there to satisfy that
             # outer Environment contract.
-            kwargs.setdefault("dataset", _default_seed_dataset())
+            kwargs.setdefault("dataset", _default_seed_dataset(num_rows=dataset_size))
 
             super().__init__(
                 rubric=rubric,
@@ -333,10 +348,30 @@ def _make_env_class():
             cl = _load_clbench()
             cl["get_task_class"](self.task_name)  # raises if unknown
 
-        def _new_task(self):
+        def _new_task(self, seed_override: Optional[int] = None):
             cl = _load_clbench()
             task_cls = cl["get_task_class"](self.task_name)
-            return task_cls(**self.task_kwargs)
+            kwargs = dict(self.task_kwargs)
+            if seed_override is not None:
+                kwargs["seed"] = int(seed_override)
+            return task_cls(**kwargs)
+
+        @staticmethod
+        def _extract_dataset_seed(state) -> Optional[int]:
+            """Pull ``info.seed`` from the rollout state, tolerant to the few
+            shapes verifiers exposes (top-level info, nested under input)."""
+            info = state.get("info") if isinstance(state, dict) else None
+            if not isinstance(info, dict):
+                inp = state.get("input") if isinstance(state, dict) else None
+                if isinstance(inp, dict):
+                    info = inp.get("info")
+            if isinstance(info, dict):
+                seed = info.get("seed")
+                if isinstance(seed, int):
+                    return seed
+                if isinstance(seed, str) and seed.lstrip("-").isdigit():
+                    return int(seed)
+            return None
 
         def _build_user_message(
             self,
@@ -409,11 +444,20 @@ def _make_env_class():
             replace it with the actual task framing so the model never sees
             the placeholder seed prompt.
 
+            Reads ``state["info"]["seed"]`` (or ``state["input"]["info"]["seed"]``)
+            and threads it into the task's ``task_kwargs.seed``. This is what
+            gives us per-step prompt diversity — the 8 rollouts in a GRPO
+            group share the same seed (= same hand), but each training step
+            picks a different dataset row (= different seed = different hand)
+            so the policy generalises across scenarios rather than memorising
+            seed=0.
+
             Must return ``state`` — verifiers' rollout assigns the result back.
             """
             from .notepad import build_schema_with_notepad
 
-            task = self._new_task()
+            seed_override = self._extract_dataset_seed(state)
+            task = self._new_task(seed_override=seed_override)
             query = task.reset()
             task_schema = query.response_schema
             prompt_schema = (
