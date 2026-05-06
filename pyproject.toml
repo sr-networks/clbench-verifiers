@@ -10,10 +10,10 @@ authors = [{ name = "sr-networks" }]
 dependencies = [
     "pydantic>=2.6",
     "tqdm>=4.65",
-    # The bench itself. Installed from git so we don't depend on PyPI.
-    # The clbench pyproject pins requires-python>=3.13, so colab_setup.sh
-    # installs it with --ignore-requires-python; locally a 3.13 venv works too.
-    "cl-benchmark @ git+https://github.com/pgasawa/continual-learning-bench.git@main",
+    # The bench itself, pulled from our fork. Upstream pins requires-python
+    # >=3.13 which blocks Prime's 3.12 env-server CI; the fork only relaxes
+    # that pin. Periodic rebases keep us current with upstream.
+    "cl-benchmark @ git+https://github.com/sr-networks/continual-learning-bench.git@main",
 ]
 
 [project.optional-dependencies]

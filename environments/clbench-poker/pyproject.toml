@@ -2,7 +2,7 @@
 name = "clbench-poker"
 description = "Continual Learning Bench `exploitable_poker` task as a verifiers MultiTurnEnv. Optional icl_notepad-style structured memory."
 tags = ["continual-learning", "tool-use", "memory", "poker", "train", "eval"]
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.10"
 authors = [{ name = "sr-networks" }]
 license = { text = "Apache-2.0" }
@@ -11,10 +11,11 @@ dependencies = [
     "verifiers>=0.1.12",
     # Pull the env wrapper, parser, rubric, notepad helpers from the glue repo.
     "clbench-verifiers @ git+https://github.com/sr-networks/clbench-verifiers.git@main",
-    # CLBench itself + the poker-specific extra. We re-pin them here so the
-    # Prime env-server image installs them in one pip resolution pass even if
-    # `clbench-verifiers` gets updated to a different commit.
-    "cl-benchmark @ git+https://github.com/pgasawa/continual-learning-bench.git@main",
+    # CLBench itself + the poker extra. We point at our fork because the
+    # upstream pyproject pins requires-python>=3.13, which blocks Prime's
+    # 3.12-based env-server CI. The fork only relaxes that pin; periodic
+    # rebases keep us current with upstream changes.
+    "cl-benchmark @ git+https://github.com/sr-networks/continual-learning-bench.git@main",
     "texasholdem==0.11.0",
 ]
 
