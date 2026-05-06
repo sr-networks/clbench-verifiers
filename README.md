@@ -18,6 +18,18 @@ rather than forking either one.
 - **Milestone 3:** Docker-sandboxed tasks (`codebase_adaptation`, `sales_prediction`)
   via a remote sandbox (Modal/e2b), since nested Docker in Colab is not really viable.
 
+## Two ways to run training
+
+| Path | Best for | Where it lives |
+|---|---|---|
+| **Local / Colab** with our `clbv-train` script | Iterating, full control, free-tier T4 / A100 / H100 | Step-by-step Colab walkthrough below in this README. |
+| **Prime Intellect Hosted Training** with `prime train` | Cheap (~$1–8/run), Prime runs the GRPO loop server-side | See [`docs/PRIME.md`](docs/PRIME.md). The env package lives in [`environments/clbench-poker/`](environments/clbench-poker/) and gets pushed to Prime's hub via `prime env push`. |
+
+Both paths use the same `CLBenchEnv` wrapper and the same notepad logic;
+they differ only in *who drives the GRPO loop*. The Colab path uses
+`vf.RLTrainer` directly; Prime's hosted path uses Prime's training service
+which speaks to the env over the verifiers env-server protocol.
+
 ## Architecture at a glance
 
 ```

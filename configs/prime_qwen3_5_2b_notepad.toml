@@ -1,0 +1,31 @@
+# Prime Hosted Training — Qwen3.5-2B on exploitable_poker WITH NOTEPAD.
+#
+# Notepad mode: 4 instances per rollout, persistent within-rollout memory.
+# Tokens per rollout are roughly 4× plain mode → cost ~$5–$8 for 200 steps.
+# Halve max_steps or rollouts_per_example to control the budget.
+
+name = "clbench-poker-qwen3.5-2b-notepad"
+model = "Qwen/Qwen3.5-2B"
+
+max_steps = 200
+batch_size = 4                 # halved from plain config to keep token budget similar
+rollouts_per_example = 4       # group size; 4 is enough with multi-instance rollouts
+learning_rate = 1e-6
+lora_alpha = 16
+
+[sampling]
+max_tokens = 1024
+temperature = 1.0
+
+[[env]]
+id = "sr-networks/clbench-poker"
+args = { use_notepad = true, max_instances_per_rollout = 4, notepad_max_chars = 2000, task_kwargs = { num_instances = 4, opponent_policy = "calling_station", seed = 0 } }
+
+[val]
+num_examples = 8
+rollouts_per_example = 1
+interval = 10
+
+# [wandb]
+# project = "clbench-verifiers"
+# name = "qwen3.5-2b-poker-notepad"

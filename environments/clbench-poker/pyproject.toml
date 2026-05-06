@@ -1,0 +1,32 @@
+[project]
+name = "clbench-poker"
+description = "Continual Learning Bench `exploitable_poker` task as a verifiers MultiTurnEnv. Optional icl_notepad-style structured memory."
+tags = ["continual-learning", "tool-use", "memory", "poker", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+authors = [{ name = "sr-networks" }]
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "verifiers>=0.1.12",
+    # Pull the env wrapper, parser, rubric, notepad helpers from the glue repo.
+    "clbench-verifiers @ git+https://github.com/sr-networks/clbench-verifiers.git@main",
+    # CLBench itself + the poker-specific extra. We re-pin them here so the
+    # Prime env-server image installs them in one pip resolution pass even if
+    # `clbench-verifiers` gets updated to a different commit.
+    "cl-benchmark @ git+https://github.com/pgasawa/continual-learning-bench.git@main",
+    "texasholdem==0.11.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["clbench_poker/**/*.py", "pyproject.toml", "README.md"]
+
+# Prime's evaluation defaults — when this env is used as an `[[eval.env]]`
+# block in a training config, these kick in unless overridden.
+[tool.verifiers.eval]
+num_examples = 8
+rollouts_per_example = 4

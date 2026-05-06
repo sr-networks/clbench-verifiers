@@ -1,0 +1,23 @@
+# Prime Hosted Training — SMOKE TEST.
+# Goal: validate env push + train wiring with minimal cost (~$0.05–$0.20).
+# Do NOT use for any real training conclusion.
+
+name = "clbench-poker-qwen3.5-2b-smoke"
+model = "Qwen/Qwen3.5-2B"
+
+# Tiny budget — enough to surface env-side errors without burning tokens.
+max_steps = 2
+batch_size = 2
+rollouts_per_example = 2
+
+# Optional knobs uncomment if needed:
+# learning_rate = 1e-6
+# lora_alpha = 16
+
+[sampling]
+max_tokens = 1024
+temperature = 1.0
+
+[[env]]
+id = "sr-networks/clbench-poker"
+args = { max_instances_per_rollout = 1, task_kwargs = { num_instances = 2, opponent_policy = "calling_station", seed = 0 } }
