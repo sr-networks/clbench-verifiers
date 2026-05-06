@@ -52,9 +52,10 @@ def load_environment(
     *,
     task_kwargs: Optional[dict[str, Any]] = None,
     max_instances_per_rollout: int = 1,
-    max_turns: int = 64,
+    max_turns: int = 16,
+    max_input_tokens_per_rollout: int = 8000,
     parse_failure_penalty: float = -1.0,
-    end_on_parse_failure: bool = False,
+    end_on_parse_failure: bool = True,
     schema_hint_in_system: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
@@ -62,6 +63,11 @@ def load_environment(
 ):
     """
     Build a verifiers ``Environment`` for ``exploitable_poker``.
+
+    Defaults are tuned for cold-start safety on an untrained base model
+    (low ``max_turns``, hard ``max_input_tokens_per_rollout`` cap, and
+    ``end_on_parse_failure=True``). Once the policy emits valid JSON
+    consistently, raise the caps via ``[[env]].args`` in the training TOML.
 
     All parameters are optional and forwarded to ``build_clbench_env``. Keyword
     args we don't recognize are accepted-and-ignored (``**_unused``) so future
@@ -76,6 +82,7 @@ def load_environment(
         task_kwargs=merged_task_kwargs,
         max_instances_per_rollout=max_instances_per_rollout,
         max_turns=max_turns,
+        max_input_tokens_per_rollout=max_input_tokens_per_rollout,
         parse_failure_penalty=parse_failure_penalty,
         end_on_parse_failure=end_on_parse_failure,
         schema_hint_in_system=schema_hint_in_system,

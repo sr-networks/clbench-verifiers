@@ -13,9 +13,10 @@
 
 task_name = "exploitable_poker"
 max_instances_per_rollout = 4
-max_turns = 96
+max_turns = 32
+max_input_tokens_per_rollout = 16000
 parse_failure_penalty = -1.0
-end_on_parse_failure = false
+end_on_parse_failure = true
 use_notepad = true
 notepad_max_chars = 2000
 

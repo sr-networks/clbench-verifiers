@@ -42,9 +42,10 @@ class TrainConfig:
     task_name: str = "exploitable_poker"
     task_kwargs: dict[str, Any] = field(default_factory=dict)
     max_instances_per_rollout: int = 1
-    max_turns: int = 64
+    max_turns: int = 16
+    max_input_tokens_per_rollout: int = 8000
     parse_failure_penalty: float = -1.0
-    end_on_parse_failure: bool = False
+    end_on_parse_failure: bool = True
     use_notepad: bool = False
     notepad_max_chars: int = 4000
 
@@ -157,6 +158,7 @@ def _build_env(cfg: TrainConfig):
         task_kwargs=cfg.task_kwargs,
         max_instances_per_rollout=cfg.max_instances_per_rollout,
         max_turns=cfg.max_turns,
+        max_input_tokens_per_rollout=cfg.max_input_tokens_per_rollout,
         parse_failure_penalty=cfg.parse_failure_penalty,
         end_on_parse_failure=cfg.end_on_parse_failure,
         use_notepad=cfg.use_notepad,

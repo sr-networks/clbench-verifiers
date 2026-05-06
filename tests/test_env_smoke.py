@@ -171,6 +171,7 @@ def test_env_drives_poker_task_smoke():
         end_on_parse_failure=False,
         use_notepad=False,
         notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -207,6 +208,7 @@ def test_env_handles_parse_failure():
         end_on_parse_failure=False,
         use_notepad=False,
         notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -272,6 +274,7 @@ def test_env_notepad_mode_persists_across_instances():
         end_on_parse_failure=False,
         use_notepad=True,
         notepad_max_chars=200,
+        max_input_tokens_per_rollout=0,
         rubric=_Rubric(),
         max_turns=64,
     )
@@ -314,6 +317,7 @@ def test_env_notepad_truncates_oversized():
         end_on_parse_failure=False,
         use_notepad=True,
         notepad_max_chars=50,
+        max_input_tokens_per_rollout=0,
         rubric=_Rubric(),
         max_turns=32,
     )
@@ -335,6 +339,72 @@ def test_env_notepad_truncates_oversized():
     assert len(rs.notepad) <= 50 + len("\n[... notepad truncated ...]") + 5
 
 
+def test_input_token_budget_disabled_by_default_in_tests():
+    """When the cap is set to 0, the @vf.stop must always return False."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=True,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    # Stand-in env doesn't expose get_state_usage; the @vf.stop should still
+    # short-circuit on max_input_tokens_per_rollout == 0 without raising.
+    async def go():
+        return await env.input_token_budget_exceeded({"clbench": None})
+
+    assert asyncio.run(go()) is False
+
+
+def test_input_token_budget_fires_when_exceeded():
+    """When the usage tracker reports input_tokens >= cap, return True."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=True,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=1000,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    # Monkey-patch get_state_usage to simulate the framework's usage tracker.
+    env.get_state_usage = lambda state: {"input_tokens": 1500, "output_tokens": 100}
+
+    async def fires():
+        return await env.input_token_budget_exceeded({})
+
+    env.get_state_usage = lambda state: {"input_tokens": 500, "output_tokens": 100}
+
+    async def passes():
+        return await env.input_token_budget_exceeded({})
+
+    assert asyncio.run(passes()) is False
+    env.get_state_usage = lambda state: {"input_tokens": 1500, "output_tokens": 100}
+    assert asyncio.run(fires()) is True
+
+
 if __name__ == "__main__":
     test_parse_action_extracts_fenced_json()
     test_parse_action_handles_inline_json()
@@ -345,4 +415,6 @@ if __name__ == "__main__":
     test_notepad_schema_augmentation()
     test_env_notepad_mode_persists_across_instances()
     test_env_notepad_truncates_oversized()
+    test_input_token_budget_disabled_by_default_in_tests()
+    test_input_token_budget_fires_when_exceeded()
     print("All smoke tests passed.")

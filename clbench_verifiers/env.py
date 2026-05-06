@@ -127,10 +127,11 @@ def build_clbench_env(
     *,
     task_kwargs: Optional[dict[str, Any]] = None,
     max_instances_per_rollout: int = 1,
-    max_turns: int = 64,
+    max_turns: int = 16,
+    max_input_tokens_per_rollout: int = 8000,
     schema_hint_in_system: bool = True,
     parse_failure_penalty: float = -1.0,
-    end_on_parse_failure: bool = False,
+    end_on_parse_failure: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
     timeout_seconds: float | None = None,
@@ -138,6 +139,12 @@ def build_clbench_env(
 ):
     """
     Construct a ``CLBenchEnv`` with a ``Rubric`` already attached.
+
+    Defaults are tuned for **early training** with an untrained base model:
+    aggressive turn and token caps and immediate exit on parse failure, so
+    cold-start cost spirals (an untrained policy that emits gibberish for
+    30+ re-prompted turns) cannot blow up. Once a policy emits valid actions
+    reliably, raise ``max_turns`` and set ``end_on_parse_failure=False``.
 
     Parameters
     ----------
@@ -149,10 +156,17 @@ def build_clbench_env(
         How many CLBench *instances* to run inside one rollout. ``1`` (default)
         gives plain GRPO with no cross-instance learning. ``>1`` enables
         continual-learning mode where memory carries across instances inside
-        the same rollout — closer to the bench's eval intent but more compute.
+        the same rollout.
     max_turns
-        Hard turn cap for verifiers' rollout loop. Should comfortably exceed
-        ``max_instances_per_rollout`` × (turns per instance).
+        Hard turn cap for verifiers' rollout loop. Default ``16`` keeps cold-
+        start rollouts bounded. Raise once the policy is producing valid
+        actions; lower is fine for evaluation rollouts that don't need much
+        depth.
+    max_input_tokens_per_rollout
+        Per-rollout cap on cumulative *input* tokens fed to the policy
+        (read from verifiers' usage tracker). Default ``8000`` keeps bad
+        rollouts from blowing up context quadratically when each turn
+        replays the prior conversation. Set to ``0`` to disable.
     schema_hint_in_system
         If True, prepend a JSON-schema hint to the system prompt so the model
         knows what shape its action must take. Recommended on for training.
@@ -160,9 +174,11 @@ def build_clbench_env(
         Scalar reward delta applied per turn where the model emits unparseable
         output. Used by the default rubric (see ``rubric.py``).
     end_on_parse_failure
-        If True, a parse failure terminates the rollout. If False (default),
-        we continue and re-prompt the model — gives the policy a chance to
-        recover and learn the correct format.
+        If True (the new default), a parse failure terminates the rollout
+        immediately, which is the correct behaviour during cost-sensitive
+        early training. Set to ``False`` once your policy emits valid JSON
+        reliably; the re-prompt path is more sample-efficient but only when
+        the model can actually recover within a few turns.
     use_notepad
         If True, augment the response schema with an optional ``notepad_update``
         field (icl_notepad style). The notepad persists across instances within
@@ -186,6 +202,7 @@ def build_clbench_env(
         end_on_parse_failure=end_on_parse_failure,
         use_notepad=use_notepad,
         notepad_max_chars=notepad_max_chars,
+        max_input_tokens_per_rollout=max_input_tokens_per_rollout,
         rubric=rubric,
         max_turns=max_turns,
         timeout_seconds=timeout_seconds,
@@ -214,6 +231,7 @@ def _make_env_class():
             end_on_parse_failure: bool,
             use_notepad: bool,
             notepad_max_chars: int,
+            max_input_tokens_per_rollout: int,
             rubric,
             max_turns: int,
             timeout_seconds: float | None = None,
@@ -226,6 +244,7 @@ def _make_env_class():
             self.end_on_parse_failure = end_on_parse_failure
             self.use_notepad = use_notepad
             self.notepad_max_chars = notepad_max_chars
+            self.max_input_tokens_per_rollout = max_input_tokens_per_rollout
 
             if use_notepad and max_instances_per_rollout < 2:
                 logger.warning(
@@ -380,6 +399,25 @@ def _make_env_class():
             if rs is None:
                 return False
             return rs.finished or rs.instances_completed >= self.max_instances_per_rollout
+
+        @vf.stop
+        async def input_token_budget_exceeded(self, state, **kwargs) -> bool:
+            """Hard cap on cumulative input tokens fed to the policy this rollout.
+
+            Without this cap, a base model that emits unparseable output keeps
+            getting re-prompted with a growing conversation, so input tokens
+            grow quadratically with turn count. We read from verifiers'
+            built-in usage tracker; if it isn't populated yet, we fall through.
+            """
+            if self.max_input_tokens_per_rollout <= 0:
+                return False
+            try:
+                usage = self.get_state_usage(state)
+            except Exception:
+                return False
+            if usage is None:
+                return False
+            return float(usage.get("input_tokens", 0)) >= self.max_input_tokens_per_rollout
 
         async def env_response(self, messages, state, **kwargs):
             """

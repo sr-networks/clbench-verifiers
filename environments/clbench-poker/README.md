@@ -17,9 +17,10 @@ opponent's pattern over a sequence of hands within a single rollout.
 | `max_instances_per_rollout` | `1` | Set ≥ 2 to enable continual mode; required for `use_notepad`. |
 | `use_notepad` | `false` | Adds an `icl_notepad`-style `notepad_update` field to the action schema. |
 | `notepad_max_chars` | `4000` | Soft cap; head-truncated when exceeded. |
-| `max_turns` | `64` | Hard cap for the verifiers rollout loop. |
+| `max_turns` | `16` | Hard cap for the verifiers rollout loop. Cold-start safe; raise once the policy emits valid actions. |
+| `max_input_tokens_per_rollout` | `8000` | Cumulative input-token cap per rollout. Set `0` to disable. Prevents context-quadratic blowup when the policy emits unparseable text. |
 | `parse_failure_penalty` | `-1.0` | Per-failure reward delta. |
-| `end_on_parse_failure` | `false` | If true, parse failure ends the rollout instead of re-prompting. |
+| `end_on_parse_failure` | `true` | Parse failure ends the rollout immediately. Flip to `false` once the policy reliably produces valid JSON. |
 
 See <https://github.com/sr-networks/clbench-verifiers> for the wrapper source
 and a fuller architecture description.

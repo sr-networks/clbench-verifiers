@@ -20,4 +20,10 @@ temperature = 1.0
 
 [[env]]
 id = "sr-networks/clbench-poker"
-args = { max_instances_per_rollout = 1, task_kwargs = { num_instances = 2, opponent_policy = "calling_station", seed = 0 } }
+args = {
+    max_instances_per_rollout = 1,
+    max_turns = 8,
+    max_input_tokens_per_rollout = 4000,
+    end_on_parse_failure = true,
+    task_kwargs = { num_instances = 2, opponent_policy = "calling_station", seed = 0 },
+}

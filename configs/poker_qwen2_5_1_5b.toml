@@ -4,9 +4,10 @@
 
 task_name = "exploitable_poker"
 max_instances_per_rollout = 1
-max_turns = 32
+max_turns = 16
+max_input_tokens_per_rollout = 8000
 parse_failure_penalty = -1.0
-end_on_parse_failure = false
+end_on_parse_failure = true
 
 [task_kwargs]
 num_instances = 5            # short rollouts during training; eval uses default schedule
