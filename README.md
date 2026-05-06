@@ -11,19 +11,48 @@ system, and two entry points). Both upstream repos move fast and have
 different release cadences, so we keep the integration as a third-party shim
 rather than forking either one.
 
-## Status
+## Status (2026-05-06)
 
-- **Milestone 1 (current):** `exploitable_poker`, with optional `icl_notepad`-style memory.
-- **Milestone 2:** `database_exploration` (similar shape, no Docker, higher memory payoff).
-- **Milestone 3:** Docker-sandboxed tasks (`codebase_adaptation`, `sales_prediction`)
-  via a remote sandbox (Modal/e2b), since nested Docker in Colab is not really viable.
+| Component | State | Notes |
+|---|---|---|
+| `exploitable_poker` env wrapper | ✅ working end-to-end | `setup_state` / `env_response` / `@vf.stop` aligned with verifiers `0.1.12` |
+| `icl_notepad`-style memory | ✅ working in env + `vllm_local` system | tested with multi-instance rollouts |
+| Local CPU smoke tests | ✅ all 9 passing | drives a real poker task through the wrapper without GPU/verifiers |
+| Local Colab GRPO (`clbv-train`) | ⚠️ scaffolded, **not yet run end-to-end** | trainer config tracks verifiers `RLConfig` API drift; first real run still pending |
+| Prime env push | ✅ `sr-networks/clbench-poker@0.1.2` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
+| Prime Hosted Training smoke run | ✅ completed `w4o10b2y9cjav8dj1b6yhx1h` | 2 steps × 2 rollouts × 2 prompts on Qwen/Qwen3.5-2B; reward = -40.5 → -39.0; **cost $3.26** (well above the $0.05–0.20 estimated — see "Cost reality" below) |
+| Prime full plain GRPO | ⏳ blocked on cost-control changes | est. cost re-derivation needed; see roadmap |
+| Prime notepad GRPO | ⏳ blocked on plain | same |
+| `database_exploration` env | ⏳ not started | low-effort follow-up; same wrapper shape |
+| Docker-sandboxed tasks | ⏳ not started | needs Modal/e2b sandbox for `codebase_adaptation` + `sales_prediction` |
+
+### Cost reality from the Prime smoke run
+
+The 2-step smoke against the **untrained** Qwen3.5-2B base burned through $3.26
+(54.56M inference-input tokens × $0.05/Mtok = $2.73 alone). Why so much:
+
+- The base model emits gibberish on poker prompts; our parser rejects it.
+- With `end_on_parse_failure=False` and `max_turns=64`, every rollout loops
+  ~30+ turns, re-prompting with growing context each time.
+- Each re-prompt sends the full prior conversation back, so input tokens grow
+  quadratically.
+- 2 × 2 = 4 rollouts × ~14k input tokens / turn × ~30 turns ≈ 1.7M tokens per
+  rollout. With Prime's batching multiplier in there, total inference input
+  hit 54M.
+
+Direct fix knobs to apply *before* launching the full 200-step run (see
+roadmap): drop `max_turns` to 16, set `end_on_parse_failure=true` for the
+first stage, or warm-start the policy via SFT on a few hundred valid action
+JSONs. Until one of those lands, **don't launch the full plain or notepad
+runs as configured** — the projected cost under base-model behavior is
+~$300+ rather than the $1–8 the configs claim.
 
 ## Two ways to run training
 
 | Path | Best for | Where it lives |
 |---|---|---|
 | **Local / Colab** with our `clbv-train` script | Iterating, full control, free-tier T4 / A100 / H100 | Step-by-step Colab walkthrough below in this README. |
-| **Prime Intellect Hosted Training** with `prime train` | Cheap (~$1–8/run), Prime runs the GRPO loop server-side | See [`docs/PRIME.md`](docs/PRIME.md). The env package lives in [`environments/clbench-poker/`](environments/clbench-poker/) and gets pushed to Prime's hub via `prime env push`. |
+| **Prime Intellect Hosted Training** with `prime train` | Cheap *once* the policy emits valid actions; Prime runs the GRPO loop server-side | See [`docs/PRIME.md`](docs/PRIME.md). The env package lives in [`environments/clbench-poker/`](environments/clbench-poker/) and gets pushed to Prime's hub via `prime env push`. |
 
 Both paths use the same `CLBenchEnv` wrapper and the same notepad logic;
 they differ only in *who drives the GRPO loop*. The Colab path uses
@@ -345,18 +374,126 @@ loaded from TOML). The fields you'll touch most often:
    training run, that's a different system (mem0-style retrieval). Out of
    scope here.
 
-## Roadmap
+## Contributing — board of next steps
 
-- [ ] Run `poker_qwen2_5_1_5b.toml` end-to-end on Colab A100, confirm the
-      trained checkpoint beats CLBench's `reset_each_instance` baseline
-      (current `gpt-5.4` baseline ≈ 1.295).
-- [ ] Run `poker_qwen2_5_1_5b_notepad.toml` and compare against the
-      no-notepad checkpoint at equal compute.
-- [ ] Wrap `database_exploration` (no Docker, similar action shape).
-- [ ] Constrained-decoding option in `train.py` for faster early-training
-      convergence.
-- [ ] Remote-sandbox option (Modal) for `codebase_adaptation` /
-      `sales_prediction`.
+The project is set up so most of the work below is **independent**, can be
+picked up by a single contributor end-to-end, and only requires the parts
+of the stack you already touch. Bullets are roughly ordered by what unblocks
+the most things downstream.
+
+Tag legend:
+
+- 🔥 **Cost-blocking** — required before more Prime training runs make sense.
+- ⭐ **Good first issue** — small, scoped, no deep familiarity with verifiers/Prime needed.
+- 🎯 **Research-y** — the result is itself the contribution.
+
+### Phase A — Cost control & training stability
+
+These are the things blocking a credible full-run on Prime. Each one
+independently brings projected cost down by 5–50×.
+
+- [ ] 🔥 ⭐ **Cap context blowup on parse failures.**
+  Drop default `max_turns` from 64 → 16, and add a per-rollout token budget
+  so we exit early when context exceeds e.g. 8k tokens. File:
+  `clbench_verifiers/env.py` (`CLBenchEnv` constructor + new `@vf.stop` for
+  token cap). Add a smoke-test case.
+- [ ] 🔥 **Constrained decoding via `guided_json`.**
+  Pass the response schema through to vLLM's structured-output backend so the
+  policy *cannot* emit unparseable text. Should eliminate parse-failure
+  re-prompt loops entirely. Affects `clbench_verifiers/system.py`,
+  `train.py`, and a new flag on the env. Confirm Prime's hosted inference
+  pool supports `guided_json` (it should, via vLLM).
+- [ ] 🔥 🎯 **SFT bootstrap before GRPO.**
+  Generate a few hundred valid `PokerAction` JSONs (random legal actions +
+  short fake-thinking strings), SFT Qwen3.5-2B on them for 100–200 steps,
+  *then* GRPO. Should make the first 20 GRPO steps cheap and prevent the
+  cold-start cost spiral the smoke run revealed.
+- [ ] ⭐ **Two-phase reward shaping.**
+  First N steps: reward only valid-JSON-emission (binary); after that switch
+  to the real `mean_instance_reward`. Lower-friction alternative to SFT
+  bootstrap. Implement as a custom rubric function in
+  `clbench_verifiers/rubric.py`.
+- [ ] ⭐ **Better diagnostics in the env state.**
+  Track and surface: per-turn output tokens, total context tokens, time per
+  rollout. Useful for the cost-control work above; also makes future
+  regressions visible in `prime train metrics`.
+
+### Phase B — More tasks
+
+Each new task wrapped buys us a new training distribution and exercises a
+different part of the bench's continual-learning signal.
+
+- [ ] 🎯 **Wrap `database_exploration`.**
+  Similar shape to poker (no Docker, multi-turn, structured action). Action
+  format is text-prefix (`QUERY <sql>` / `ANSWER <text>`) rather than JSON,
+  so this also exercises a different parser path. Add
+  `environments/clbench-database-exploration/` mirroring the poker package.
+  Memory payoff is high (schema reuse), so notepad mode should shine here.
+- [ ] **Wrap `cohort_studies`.**
+  Pure tool-calling task (typed pydantic discriminated union of 6 tools).
+  Forces the env wrapper to round-trip OpenAI-style tool calls rather than
+  inline JSON. Likely needs a small `tool_call` extension to the env.
+- [ ] **Wrap `blind_spectrum_monitoring`.**
+  Single-shot structured output per instance. Easiest of the remaining
+  tasks. Mostly tests the wrapper for `instance_complete=True` immediately.
+- [ ] 🎯 **Wrap `codebase_adaptation` + `sales_prediction` via remote sandbox.**
+  These need Docker per turn. Two viable backends:
+    - **Modal** — easy, high-quality SDK, $/min pricing.
+    - **e2b** — purpose-built for AI sandboxes, cheaper at scale.
+  Add a `clbench_verifiers/sandbox/` module that adapts CLBench's
+  in-task Docker calls to a remote sandbox. Open question: is per-instance
+  container reuse worth the complexity, or do we re-spawn each instance?
+
+### Phase C — Memory & training research
+
+- [ ] 🎯 **Compare ICL / icl_notepad / mem0 / no-memory at equal compute.**
+  Replicate (a subset of) CLBench's leaderboard study but with our trained
+  policy as the underlying LM. Each system is selected via `[[env]].args`
+  (notepad on/off) and Prime training config. Result is a small table that
+  could go in a blog post / paper.
+- [ ] 🎯 **Per-turn vs trajectory rewards.**
+  Right now the trajectory's mean instance reward is assigned to every
+  emitted token. For poker (5 turns) that's fine; for `database_exploration`
+  (15+ turns) the gradient is blurred. Implement GAE-per-turn or use
+  `Observation.content` as a step reward source.
+- [ ] 🎯 **Cross-rollout memory (for notepad mode).**
+  Currently the notepad resets between rollouts to keep GRPO i.i.d.
+  Experiment with carrying notepad state across rollouts in a group (so
+  rollout 7 of 8 can read what rollout 1 wrote). This is a small departure
+  from canonical GRPO but lets the policy learn longer-horizon memory use.
+- [ ] **Curriculum: easier opponent → harder opponent.**
+  Train against `calling_station` (current default), then mix in
+  `fit_or_fold` and `loose_aggressive`. Compare to flat-distribution training.
+
+### Phase D — Engineering / DX
+
+- [ ] ⭐ **Pull a Prime checkpoint and run `clbv-eval` on it.**
+  End-to-end "trained model → official CLBench score" path. Add a
+  `clbv-eval --prime-run <run_id>` shortcut that downloads the latest
+  checkpoint and shells out to existing eval code.
+- [ ] ⭐ **Replace `requires-python>=3.13` workaround with an upstream PR.**
+  Submit a PR to `pgasawa/continual-learning-bench` relaxing the pin so we
+  can drop the fork at `sr-networks/continual-learning-bench`.
+- [ ] ⭐ **CI on this repo.**
+  GitHub Actions running `pytest tests/test_env_smoke.py` on push. The
+  smoke tests don't need a GPU and should stay green.
+- [ ] **Push `clbench-verifiers` (the glue package) to PyPI.**
+  Currently we install via git URL. Pinning to a PyPI version makes Prime
+  CI builds more reproducible.
+- [ ] **Pre-commit hooks (ruff + black) and a CONTRIBUTING.md.**
+
+### How to claim work
+
+1. Open a GitHub issue mirroring the bullet (e.g. *"Phase A — cap context
+   blowup on parse failures"*) and link this section.
+2. Drop a comment claiming it before starting so we don't double-up.
+3. Open the PR against `main`. Add or update a smoke test if you touch the
+   env wrapper or the rubric — anything else needs at least manual
+   reproduction notes.
+
+For Prime-side changes (env CI / training cost / hub layout), include a
+short `prime train metrics` snapshot in the PR description so reviewers
+can see the cost effect without having to launch a run themselves.
 
 ## License
 
