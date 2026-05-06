@@ -30,6 +30,30 @@ temperature = 1.0
 # turning it off also cuts the per-token cost of the unused reasoning channel.
 enable_thinking = false
 
+# Constrained decoding — vLLM's guided_json passed through Prime's hosted
+# inference pool via [sampling.extra_body]. The schema must match the env's
+# response_schema. Generated from PokerAction.model_json_schema().
+[sampling.extra_body.guided_json]
+type = "object"
+title = "PokerAction"
+description = "Structured poker action response."
+required = ["thinking", "action"]
+
+[sampling.extra_body.guided_json.properties.thinking]
+type = "string"
+title = "Thinking"
+description = "Your reasoning about the hand situation and why you chose this action"
+
+[sampling.extra_body.guided_json.properties.action]
+type = "string"
+title = "Action"
+description = "One of: FOLD, CALL, CHECK, RAISE"
+
+[sampling.extra_body.guided_json.properties.amount]
+title = "Amount"
+description = "Raise amount (only required for RAISE); leave null otherwise"
+anyOf = [{ type = "integer" }, { type = "null" }]
+
 [[env]]
 id = "sr-networks/clbench-poker"
 # end_on_parse_failure = false: give the model up to `max_turns` chances to

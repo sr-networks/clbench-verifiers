@@ -488,44 +488,13 @@ def _make_env_class():
             }
             return sampling_args
 
-        async def get_model_response(
-            self,
-            state,
-            prompt,
-            client=None,
-            model=None,
-            tool_defs=None,
-            sampling_args=None,
-        ):
-            """
-            Override so we force-inject the guided_json / response_format
-            constraint regardless of who passes sampling_args in (the trainer,
-            the rollout caller, or our own setup_state). This is the only
-            code path that's actually load-bearing for Prime hosted training,
-            because the trainer can supply its own sampling_args at call time
-            and bypass state["sampling_args"].
-            """
-            if self.enable_guided_json:
-                rs = state.get("clbench") if isinstance(state, dict) else None
-                schema = getattr(rs, "prompt_schema", None) if rs is not None else None
-                if schema is None:
-                    # Fall back to whatever the env's task_schema is — better
-                    # than nothing if the rollout state isn't populated yet.
-                    schema = getattr(rs, "task_schema", None) if rs is not None else None
-                if schema is not None:
-                    base = sampling_args
-                    if base is None:
-                        base = state.get("sampling_args") if isinstance(state, dict) else None
-                    base = dict(base) if isinstance(base, dict) else {}
-                    sampling_args = self._apply_constraint(base, schema)
-            return await super().get_model_response(
-                state,
-                prompt,
-                client=client,
-                model=model,
-                tool_defs=tool_defs,
-                sampling_args=sampling_args,
-            )
+        # Note: an earlier version of this class overrode `get_model_response`
+        # to force-inject the guided_json constraint regardless of caller, but
+        # that broke Prime's TITO (token-in-token-out) call path which doesn't
+        # go through the standard chat-completions surface. The constraint
+        # now flows from `[sampling.extra_body.guided_json]` in the Prime
+        # training TOML, with `state["sampling_args"]` injection as a backup
+        # for non-Prime callers.
 
         # NOTE: ``Environment.is_completed`` is ``@final`` and walks all
         # ``@vf.stop``-decorated methods to decide termination. We register
