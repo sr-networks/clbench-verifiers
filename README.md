@@ -15,24 +15,51 @@ rather than forking either one.
 
 | Component | State | Notes |
 |---|---|---|
-| `exploitable_poker` env wrapper | ✅ working end-to-end | `setup_state` / `env_response` / `@vf.stop` aligned with verifiers `0.1.12` |
+| `exploitable_poker` env wrapper | ✅ working end-to-end | `setup_state` / `env_response` / `@vf.stop` aligned with verifiers `0.1.12`; reads `content` AND `reasoning_content` so thinking models like Qwen3.5 are handled correctly |
 | `icl_notepad`-style memory | ✅ working in env + `vllm_local` system | tested with multi-instance rollouts |
-| Cost caps (`max_input_tokens_per_rollout`, lower `max_turns`) | ✅ landed | 80× cost reduction vs uncapped run, see table below |
+| Cost caps (`max_input_tokens_per_rollout`, lower `max_turns`) | ✅ landed | ~80× cost reduction vs uncapped run, see table below |
 | Partial-format reward shaping | ✅ landed | weight 0.1; breaks zero-advantage at cold-start |
-| Local CPU smoke tests | ✅ all 13 passing | drives a real poker task through the wrapper without GPU/verifiers |
+| Local CPU smoke tests | ✅ all 14 passing | drives a real poker task through the wrapper without GPU/verifiers; covers reasoning_content and format-score paths |
 | Local Colab GRPO (`clbv-train`) | ⚠️ scaffolded, **not yet run end-to-end** | trainer config tracks verifiers `RLConfig` API drift; first real run still pending |
-| Prime env push | ✅ `sr-networks/clbench-poker@0.1.4` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
-| Prime Hosted Training smoke | ✅ green pipeline | `lmqvmi9ah7m6yhxgca98wbql`, 2 steps, $0.04, both steps converged |
-| Prime full plain GRPO (200 steps) | ⏳ ready to launch | projected $1–4 with current caps; reward = parse_failure_dominated until policy learns valid JSON |
-| Prime notepad GRPO | ⏳ ready to launch after plain | same shape, ~3-4× tokens for 4-instance rollouts |
+| Prime env push | ✅ `sr-networks/clbench-poker@0.1.5` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
+| Prime Hosted Training smoke | ✅ green pipeline | `akfq9ddm5bn59dgae172ek5d`: instances actually completing, real poker rewards, $0.05 / 2 steps |
+| Prime full plain GRPO (200 steps) | ⚠️ runs cleanly, but **no learning trend yet** | `p8hx0n3n5gxu0dbjs5s7f4nc`: rewards bounce in [-3, -1] for 90+ steps with widening variance; root cause is mid-output truncation + permissive reward — see "Cost is controlled, learning isn't" below |
+| Prime notepad GRPO | ⏳ blocked on plain learning trend | same env, just needs a working plain policy to compare against |
 | `database_exploration` env | ⏳ not started | low-effort follow-up; same wrapper shape |
 | Docker-sandboxed tasks | ⏳ not started | needs Modal/e2b sandbox for `codebase_adaptation` + `sales_prediction` |
 
-### Cost-control journey on the Prime smoke
+### Cost is controlled. Learning is the next frontier.
 
-Each row below is one full smoke run (2 steps, batch_size 2-4, on
-Qwen/Qwen3.5-2B). The original burned through $3.26 because of context-
-quadratic blowup; the final config delivers a working pipeline at $0.04.
+Cost control was the explicit goal of the first push, and it's solved:
+the original uncapped 2-step smoke burned **$3.26** on 30+-turn gibberish
+loops; the current-config 2-step smoke costs **$0.05** and runs to
+completion with rollouts that actually finish poker hands. A 200-step
+plain run (8 rollouts/step) lands somewhere around **$2–4**, predictable
+and capped.
+
+What we *also* learned in the process is that a green pipeline isn't the
+same as a learning pipeline. The current 200-step run's reward keeps
+oscillating around -1.8 with no upward trend through ~90 steps. Two real
+issues remain:
+
+1. **Mid-output truncation under `max_tokens=1024`.** Qwen3.5-2B is verbose;
+   it spends its entire output budget on the `thinking` field, leaving the
+   `action` / `amount` fields off the end. The JSON is incomplete, the
+   action either fails to parse or fails task validation, and the rollout
+   wastes turns re-prompting until the input-token cap fires.
+2. **`num_instances_completed` is a free lunch.** It exists as a weight-0
+   diagnostic. When a rollout never finishes a hand, `mean_instance_reward`
+   is treated as `0` (no instances to average over), which is *better than*
+   the typical `−1` of an actual losing hand. A policy that emits valid-
+   shape JSON without playing therefore beats a policy that plays badly.
+   This is a reward-hacking attractor reachable from the current init.
+
+Both have one-line fixes; we landed cost control first because it was
+blocking us from finding these. The fixes — `max_tokens=2048` and
+weight-1 on `num_instances_completed` — are proposed but not yet shipped
+as of this README write.
+
+### Cost-control journey
 
 | Run | Config delta | Outcome | Cost |
 |---|---|---|---|
@@ -40,12 +67,23 @@ quadratic blowup; the final config delivers a working pipeline at $0.04.
 | `ceizjz5hxeamdvlwke4kd0km` | + `max_turns=8`, `max_input_tokens_per_rollout=4000`, `end_on_parse_failure=true` | FAILED — `zero_advantage=2/2` every group ⇒ orchestrator crash | $0.005 |
 | `r9zjmjt6ci90y4jtsm8c5qsf` | + partial-format reward shaping (0..1, weight 0.1) | FAILED — same crash, 2 rollouts/group still too few | $0.006 |
 | `u46xq9y4fzp2mb93ngoyc9sx` | + `rollouts_per_example=4`, `batch_size=4` | step 0 ✓, **step 1 zero-advantage crash** (post-update output collapse) | $0.01 |
-| `lmqvmi9ah7m6yhxgca98wbql` | + `end_on_parse_failure=false` (rely on token cap, not turn-1 abort) | ✅ **COMPLETED both steps**, orchestrator clean exit | **$0.04** |
+| `lmqvmi9ah7m6yhxgca98wbql` | + `end_on_parse_failure=false` (rely on token cap, not turn-1 abort) | ✅ both steps completed but `best_format_score=0`! | $0.04 |
+| **`akfq9ddm5bn59dgae172ek5d`** | + env reads `content` *and* `reasoning_content` (v0.1.5) + `enable_thinking=false` | ✅ instances actually completing, real reward signal | **$0.05** |
+| `bhj1q8wm3aaxs3t4brdipaaw` | full 200-step run on the broken-extraction config (pre-v0.1.5) | reward stuck at -5.0 floor for 51 steps; stopped early | $1.58 |
+| `p8hx0n3n5gxu0dbjs5s7f4nc` | full 200-step run on v0.1.5 + `enable_thinking=false` | runs cleanly; rewards in [-3, -1] band; **no learning trend yet** (in flight) | ~$2–4 projected |
 
-Lesson learned: the right cold-start configuration is "tight token budget +
-generous turn budget + format-shaping reward + group size ≥ 4". Aborting on
-parse failure is the wrong knob; it makes every rollout's reward identical
-and breaks GRPO's variance assumption.
+Lessons baked in:
+
+1. The right cold-start config is "tight token budget + generous turn
+   budget + format-shaping reward + group size ≥ 4". Aborting on parse
+   failure breaks GRPO's variance assumption.
+2. Thinking models put their output in `reasoning_content`, not `content`.
+   A wrapper that reads only `content` will see empty strings and report
+   100% parse failure even when the model is producing valid output —
+   that was the entire signal-loss in the first 50-step run. The env now
+   reads both fields.
+3. A green pipeline is not a learning pipeline. Watch reward dynamics,
+   not just cost.
 
 ## Two ways to run training
 
@@ -389,34 +427,58 @@ Tag legend:
 
 ### Phase A — Cost control & training stability
 
-These are the things blocking a credible full-run on Prime. Each one
-independently brings projected cost down by 5–50×.
+Cost-control items: ✅ shipped. Learning-stability items below are now the
+critical path before another full run is worth the spend.
 
-- [ ] 🔥 ⭐ **Cap context blowup on parse failures.**
-  Drop default `max_turns` from 64 → 16, and add a per-rollout token budget
-  so we exit early when context exceeds e.g. 8k tokens. File:
-  `clbench_verifiers/env.py` (`CLBenchEnv` constructor + new `@vf.stop` for
-  token cap). Add a smoke-test case.
+- [x] 🔥 ⭐ **Cap context blowup on parse failures.** ([5561849](https://github.com/sr-networks/clbench-verifiers/commit/5561849))
+  `max_turns 64→16`, new `@vf.stop input_token_budget_exceeded` reading
+  verifiers' usage tracker, default cap 8000 input tokens/rollout.
+- [x] ⭐ **Two-phase reward shaping.** ([e50c78a](https://github.com/sr-networks/clbench-verifiers/commit/e50c78a))
+  Partial-format heuristic in `_format_score(text, schema, parsed_ok)`,
+  tracked as `best_format_score` and weighted 0.1 by default. Used to break
+  zero-advantage on cold-start groups.
+- [x] **Read `reasoning_content` from thinking models.** ([bb759e3](https://github.com/sr-networks/clbench-verifiers/commit/bb759e3))
+  Qwen3.5 / Nemotron / GPT-OSS-thinking split output across two fields.
+  The wrapper now reads both. Configs default `enable_thinking=false` for
+  Qwen3.5 to also save the reasoning-channel tokens.
+
+Now the open items, in order of how directly they unblock real learning:
+
+- [ ] 🔥 ⭐ **Penalize "didn't finish a hand".**
+  `num_instances_completed` is a weight-0 diagnostic. A rollout that emits
+  valid-shape JSON without ever finishing an instance gets
+  `mean_instance_reward = 0`, which is *better* than playing badly. Bump
+  the weight to ~1.0 in `clbench_verifiers/rubric.py::build_clbench_rubric`
+  so the model can't reward-hack the metric. Add a smoke test that fails
+  if a rollout with zero completions outscores one that completed and lost.
+- [ ] 🔥 ⭐ **Bump `max_tokens` to 2048 in Prime configs.**
+  Qwen3.5-2B is verbose; with 1024 it spends the entire output budget on
+  the `thinking` field and never emits `action`/`amount`. Touches all three
+  `configs/prime_*.toml` `[sampling]` blocks. Trade-off: cost per rollout
+  ≈ 2× — still in our budget envelope.
 - [ ] 🔥 **Constrained decoding via `guided_json`.**
-  Pass the response schema through to vLLM's structured-output backend so the
-  policy *cannot* emit unparseable text. Should eliminate parse-failure
-  re-prompt loops entirely. Affects `clbench_verifiers/system.py`,
-  `train.py`, and a new flag on the env. Confirm Prime's hosted inference
-  pool supports `guided_json` (it should, via vLLM).
+  Pass the response schema through to vLLM's structured-output backend so
+  the policy *cannot* emit unparseable text. Eliminates the parse-failure
+  re-prompt loop entirely and removes our reliance on the format-shaping
+  heuristic (which the policy is currently learning to game). Affects
+  `clbench_verifiers/system.py` and `train.py`; confirm Prime's hosted
+  inference pool exposes the flag.
 - [ ] 🔥 🎯 **SFT bootstrap before GRPO.**
   Generate a few hundred valid `PokerAction` JSONs (random legal actions +
   short fake-thinking strings), SFT Qwen3.5-2B on them for 100–200 steps,
-  *then* GRPO. Should make the first 20 GRPO steps cheap and prevent the
-  cold-start cost spiral the smoke run revealed.
-- [ ] ⭐ **Two-phase reward shaping.**
-  First N steps: reward only valid-JSON-emission (binary); after that switch
-  to the real `mean_instance_reward`. Lower-friction alternative to SFT
-  bootstrap. Implement as a custom rubric function in
-  `clbench_verifiers/rubric.py`.
-- [ ] ⭐ **Better diagnostics in the env state.**
-  Track and surface: per-turn output tokens, total context tokens, time per
-  rollout. Useful for the cost-control work above; also makes future
-  regressions visible in `prime train metrics`.
+  *then* GRPO. Cleanest fix to cold-start; alternative to constrained
+  decoding for environments where `guided_json` is unavailable.
+- [ ] ⭐ **Schema description tightening.**
+  Add `description="Brief reasoning, ≤30 words"` (or similar) to the
+  `thinking` field in CLBench's `PokerAction`. Smaller deltas are likely
+  but it's the cheapest way to discourage the rambling that hits
+  `max_tokens`. Upstream PR to `pgasawa/continual-learning-bench`.
+- [ ] ⭐ **Per-turn rollout diagnostics in env state.**
+  Track per-turn: output tokens, prompt-vs-completion ratio, time. Surface
+  as weight-0 rubric components so they show up in
+  `prime train metrics --output json` and we can spot regressions like
+  the "all thinking, no action" attractor without having to manually
+  inspect rollouts.
 
 ### Phase B — More tasks
 
