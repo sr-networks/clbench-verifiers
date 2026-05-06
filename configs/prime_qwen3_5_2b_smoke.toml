@@ -26,4 +26,8 @@ temperature = 1.0
 
 [[env]]
 id = "sr-networks/clbench-poker"
-args = { max_instances_per_rollout = 1, max_turns = 8, max_input_tokens_per_rollout = 4000, end_on_parse_failure = true, task_kwargs = { num_instances = 2, opponent_policy = "calling_station", seed = 0 } }
+# end_on_parse_failure = false: give the model up to `max_turns` chances to
+# emit valid JSON within one rollout. The hard input-token cap prevents
+# context-quadratic blowup. Multiple turns per rollout produces more
+# variance across rollouts, helping GRPO escape zero-advantage at cold-start.
+args = { max_instances_per_rollout = 1, max_turns = 8, max_input_tokens_per_rollout = 4000, end_on_parse_failure = false, task_kwargs = { num_instances = 2, opponent_policy = "calling_station", seed = 0 } }
