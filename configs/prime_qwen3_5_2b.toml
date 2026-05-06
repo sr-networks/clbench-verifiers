@@ -24,13 +24,7 @@ id = "sr-networks/clbench-poker"
 # (when the base model still emits unparseable text frequently) stay cheap.
 # Raise max_turns to 16-32 and set end_on_parse_failure=false once the policy
 # is producing valid JSON ≥90% of the time.
-args = {
-    max_instances_per_rollout = 1,
-    max_turns = 12,
-    max_input_tokens_per_rollout = 6000,
-    end_on_parse_failure = true,
-    task_kwargs = { num_instances = 5, opponent_policy = "calling_station", seed = 0 },
-}
+args = { max_instances_per_rollout = 1, max_turns = 12, max_input_tokens_per_rollout = 6000, end_on_parse_failure = true, task_kwargs = { num_instances = 5, opponent_policy = "calling_station", seed = 0 } }
 
 # Optional: light validation every 10 steps.
 [val]

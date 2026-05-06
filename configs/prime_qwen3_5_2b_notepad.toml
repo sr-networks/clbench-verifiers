@@ -22,15 +22,7 @@ id = "sr-networks/clbench-poker"
 # Notepad mode: 4 instances per rollout × ~6 expected turns each ≈ 24-turn cap.
 # We give it a generous max_turns=32 since legitimate rollouts can be long,
 # but a hard input-token budget so cold-start gibberish can't blow up context.
-args = {
-    use_notepad = true,
-    max_instances_per_rollout = 4,
-    notepad_max_chars = 2000,
-    max_turns = 32,
-    max_input_tokens_per_rollout = 16000,
-    end_on_parse_failure = true,
-    task_kwargs = { num_instances = 4, opponent_policy = "calling_station", seed = 0 },
-}
+args = { use_notepad = true, max_instances_per_rollout = 4, notepad_max_chars = 2000, max_turns = 32, max_input_tokens_per_rollout = 16000, end_on_parse_failure = true, task_kwargs = { num_instances = 4, opponent_policy = "calling_station", seed = 0 } }
 
 [val]
 num_examples = 8
