@@ -25,6 +25,30 @@ temperature = 1.0
 # matches the action-emission pattern at training and eval time.
 enable_thinking = false
 
+# Constrained decoding via vLLM guided_json. Smoke run zco930bwwpqgjd2cm3hxj80v
+# confirmed parse_failure_penalty drops to 0 with this config and rollouts
+# actually complete hands (num_instances_completed = 1.0).
+[sampling.extra_body.guided_json]
+type = "object"
+title = "PokerAction"
+description = "Structured poker action response."
+required = ["thinking", "action"]
+
+[sampling.extra_body.guided_json.properties.thinking]
+type = "string"
+title = "Thinking"
+description = "Your reasoning about the hand situation and why you chose this action"
+
+[sampling.extra_body.guided_json.properties.action]
+type = "string"
+title = "Action"
+description = "One of: FOLD, CALL, CHECK, RAISE"
+
+[sampling.extra_body.guided_json.properties.amount]
+title = "Amount"
+description = "Raise amount (only required for RAISE); leave null otherwise"
+anyOf = [{ type = "integer" }, { type = "null" }]
+
 [[env]]
 id = "sr-networks/clbench-poker"
 # Lessons baked in from the smoke runs:

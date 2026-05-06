@@ -21,10 +21,11 @@ rather than forking either one.
 | Partial-format reward shaping | ✅ landed | weight 0.1; breaks zero-advantage at cold-start |
 | Local CPU smoke tests | ✅ all 14 passing | drives a real poker task through the wrapper without GPU/verifiers; covers reasoning_content and format-score paths |
 | Local Colab GRPO (`clbv-train`) | ⚠️ scaffolded, **not yet run end-to-end** | trainer config tracks verifiers `RLConfig` API drift; first real run still pending |
-| Prime env push | ✅ `sr-networks/clbench-poker@0.1.5` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
-| Prime Hosted Training smoke | ✅ green pipeline | `akfq9ddm5bn59dgae172ek5d`: instances actually completing, real poker rewards, $0.05 / 2 steps |
-| Prime full plain GRPO (200 steps) | ⚠️ runs cleanly, but **no learning trend yet** | `p8hx0n3n5gxu0dbjs5s7f4nc`: rewards bounce in [-3, -1] for 90+ steps with widening variance; root cause is mid-output truncation + permissive reward — see "Cost is controlled, learning isn't" below |
-| Prime notepad GRPO | ⏳ blocked on plain learning trend | same env, just needs a working plain policy to compare against |
+| Prime env push | ✅ `sr-networks/clbench-poker@0.1.8` PUBLIC | CI green; live at <https://app.primeintellect.ai/dashboard/environments/sr-networks/clbench-poker> |
+| Constrained decoding (`guided_json`) | ✅ landed via `[sampling.extra_body.guided_json]` | `zco930bwwpqgjd2cm3hxj80v`: parse_failure_penalty 0.0, format_score 1.0, instance completion 1.0, **first positive step reward (+0.10)** |
+| Prime Hosted Training smoke | ✅ green pipeline | `zco930bwwpqgjd2cm3hxj80v`: 2 steps × 4 rollouts, all parse, all complete, $0.04 |
+| Prime full plain GRPO (200 steps) | ⏳ ready to relaunch on the new clean signal | `p8hx0n3n5gxu0dbjs5s7f4nc` ran without guided_json and showed no learning trend ($5.59) |
+| Prime notepad GRPO | ⏳ ready to launch after plain | notepad config now ships with the matching schema-aware `guided_json` block |
 | `database_exploration` env | ⏳ not started | low-effort follow-up; same wrapper shape |
 | Docker-sandboxed tasks | ⏳ not started | needs Modal/e2b sandbox for `codebase_adaptation` + `sales_prediction` |
 
@@ -70,7 +71,10 @@ as of this README write.
 | `lmqvmi9ah7m6yhxgca98wbql` | + `end_on_parse_failure=false` (rely on token cap, not turn-1 abort) | ✅ both steps completed but `best_format_score=0`! | $0.04 |
 | **`akfq9ddm5bn59dgae172ek5d`** | + env reads `content` *and* `reasoning_content` (v0.1.5) + `enable_thinking=false` | ✅ instances actually completing, real reward signal | **$0.05** |
 | `bhj1q8wm3aaxs3t4brdipaaw` | full 200-step run on the broken-extraction config (pre-v0.1.5) | reward stuck at -5.0 floor for 51 steps; stopped early | $1.58 |
-| `p8hx0n3n5gxu0dbjs5s7f4nc` | full 200-step run on v0.1.5 + `enable_thinking=false` | runs cleanly; rewards in [-3, -1] band; **no learning trend yet** (in flight) | ~$2–4 projected |
+| `p8hx0n3n5gxu0dbjs5s7f4nc` | full 200-step run on v0.1.5 + `enable_thinking=false` | runs cleanly 200/200; **no learning trend** (rewards in [-3, -1] throughout) | $5.59 |
+| `kwklvvrxoisl8bh4cbvb8pp5` | env-side `state["sampling_args"]["extra_body"]["guided_json"]` injection (v0.1.6) | constraint never reached vLLM; parse failures still ~3/turn | $0.06 |
+| `hlrfpn58m3secgdzlm61bld7` | `get_model_response` override forcing constraint per-call (v0.1.7) | broke Prime's TITO client path; orchestrator hung 11 min before crashing | $0.00 |
+| **`zco930bwwpqgjd2cm3hxj80v`** | guided_json via `[sampling.extra_body.guided_json]` in TOML (v0.1.8) | ✅ **parse_failure_penalty=0, instance completion 100%, step 1 reward +0.10** | **$0.04** |
 
 Lessons baked in:
 
@@ -456,13 +460,13 @@ Now the open items, in order of how directly they unblock real learning:
   the `thinking` field and never emits `action`/`amount`. Touches all three
   `configs/prime_*.toml` `[sampling]` blocks. Trade-off: cost per rollout
   ≈ 2× — still in our budget envelope.
-- [ ] 🔥 **Constrained decoding via `guided_json`.**
-  Pass the response schema through to vLLM's structured-output backend so
-  the policy *cannot* emit unparseable text. Eliminates the parse-failure
-  re-prompt loop entirely and removes our reliance on the format-shaping
-  heuristic (which the policy is currently learning to game). Affects
-  `clbench_verifiers/system.py` and `train.py`; confirm Prime's hosted
-  inference pool exposes the flag.
+- [x] 🔥 **Constrained decoding via `guided_json`.** ([84d3312](https://github.com/sr-networks/clbench-verifiers/commit/84d3312))
+  Configured via Prime's `[sampling.extra_body.guided_json]` TOML block (env
+  v0.1.8). Smoke `zco930bwwpqgjd2cm3hxj80v` confirms the constraint reaches
+  vLLM and the policy now produces fully valid JSON every turn. Two earlier
+  attempts (env-side `state["sampling_args"]` injection, runtime
+  `get_model_response` override) didn't make it through Prime's TITO client
+  path; the TOML-driven path does.
 - [ ] 🔥 🎯 **SFT bootstrap before GRPO.**
   Generate a few hundred valid `PokerAction` JSONs (random legal actions +
   short fake-thinking strings), SFT Qwen3.5-2B on them for 100–200 steps,

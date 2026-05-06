@@ -21,6 +21,35 @@ temperature = 1.0
 # so a separate reasoning channel is doubly redundant.
 enable_thinking = false
 
+# Constrained decoding via vLLM guided_json. The schema below is the
+# notepad-augmented PokerAction (the env adds an optional `notepad_update`
+# field when use_notepad=true).
+[sampling.extra_body.guided_json]
+type = "object"
+title = "PokerActionWithNotepad"
+description = "Structured poker action with optional persistent notepad update."
+required = ["thinking", "action"]
+
+[sampling.extra_body.guided_json.properties.thinking]
+type = "string"
+title = "Thinking"
+description = "Your reasoning about the hand situation and why you chose this action"
+
+[sampling.extra_body.guided_json.properties.action]
+type = "string"
+title = "Action"
+description = "One of: FOLD, CALL, CHECK, RAISE"
+
+[sampling.extra_body.guided_json.properties.amount]
+title = "Amount"
+description = "Raise amount (only required for RAISE); leave null otherwise"
+anyOf = [{ type = "integer" }, { type = "null" }]
+
+[sampling.extra_body.guided_json.properties.notepad_update]
+title = "Notepad update"
+description = "Optional: full new contents of the persistent notepad (replaces previous). Leave null to keep notepad unchanged."
+anyOf = [{ type = "string" }, { type = "null" }]
+
 [[env]]
 id = "sr-networks/clbench-poker"
 # Notepad mode: 4 instances per rollout × ~6 expected turns each ≈ 24-turn cap.
