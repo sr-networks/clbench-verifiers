@@ -22,6 +22,11 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Required because two of our deps are pulled directly from git
+# (clbench-verifiers from this repo, cl-benchmark from upstream).
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build]
 include = ["clbench_poker/**/*.py", "pyproject.toml", "README.md"]
 
