@@ -8,9 +8,10 @@ name = "clbench-poker-qwen3.5-2b-notepad"
 model = "Qwen/Qwen3.5-2B"
 
 max_steps = 100                # half-budget exploratory run
-batch_size = 4                 # halved from plain config to keep token budget similar
-rollouts_per_example = 4       # group size; 4 is enough with multi-instance rollouts
-learning_rate = 1e-6
+batch_size = 8                 # = rollouts_per_example; one distinct prompt × 8 rollouts
+rollouts_per_example = 8       # group size up from 4 → tighter advantage estimates
+learning_rate = 5e-6           # up from 1e-6: previous slope was within noise of zero;
+                                # bigger steps to make actual policy movement visible
 lora_alpha = 16
 
 [sampling]
