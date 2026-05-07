@@ -739,6 +739,25 @@ def _make_env_class():
                     }
                 ]
 
+            # Propagate the just-finished step's observation as feedback on
+            # the next query. The CLBench harness does this in its runner
+            # loop; we have to do it manually here because we drive the task
+            # ourselves. Without this, the model never sees the outcome of
+            # the prior turn — particularly load-bearing at instance
+            # boundaries with clear_history_between_instances=True, where
+            # the notepad is the model's only memory channel and it would
+            # otherwise have no idea whether the last hand won or lost.
+            if obs is not None and getattr(next_query, "feedback", None) is None:
+                try:
+                    import dataclasses as _dc
+                    next_query = _dc.replace(next_query, feedback=obs)
+                except Exception:
+                    # Fallback if Query isn't a dataclass on this version.
+                    try:
+                        next_query.feedback = obs  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+
             # Update schemas if the task swapped them mid-rollout.
             from .notepad import build_schema_with_notepad
 

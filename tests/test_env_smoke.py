@@ -483,6 +483,67 @@ def test_latest_assistant_text_reads_reasoning_content():
     assert "CALL" in env._latest_assistant_text(msgs_content_only)
 
 
+def test_observation_propagated_as_feedback_at_instance_boundary():
+    """When a turn ends an instance and the rollout continues to a next
+    instance, the next user message must include the just-finished
+    observation as `=== FEEDBACK ===`. Without this the model can't
+    write notes about prior-hand outcomes."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={
+            "num_instances": 4,
+            "opponent_policy": "calling_station",
+            "seed": 0,
+        },
+        max_instances_per_rollout=4,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=True,
+        notepad_max_chars=500,
+        max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
+        clear_history_between_instances=True,
+        rubric=_Rubric(),
+        max_turns=64,
+    )
+
+    async def go():
+        state = {"messages": []}
+        await env.setup_state(state)
+        # Drive successive FOLD actions — each one ends the current poker
+        # hand quickly, so we cross instance boundaries.
+        valid_action = (
+            '{"thinking": "fold weak", "action": "FOLD", '
+            '"notepad_update": "opponent calls a lot"}'
+        )
+        boundary_msgs = []
+        for _ in range(8):  # generous; usually only need 1-3 turns per FOLD
+            state["messages"].append({"role": "assistant", "content": valid_action})
+            new_msgs = await env.env_response(state["messages"], state)
+            state["messages"].extend(new_msgs)
+            rs = state["clbench"]
+            content = new_msgs[-1].get("content", "")
+            # Detect a boundary: instance just bumped AND new prompt contains FEEDBACK.
+            if rs.instances_completed >= 1 and "=== FEEDBACK ===" in content:
+                boundary_msgs.append(content)
+            if rs.instances_completed >= 2:
+                break
+        return boundary_msgs
+
+    boundaries = asyncio.run(go())
+    assert boundaries, "expected at least one instance-boundary message with FEEDBACK"
+    # Outcome wording from the poker task includes 'Hand' and either 'WON' or 'LOST'.
+    bm = boundaries[0]
+    assert "Hand" in bm
+    assert "WON" in bm or "LOST" in bm or "complete" in bm.lower()
+
+
 def test_dataset_seed_is_threaded_into_task_kwargs():
     """state['info']['seed'] should override task_kwargs.seed in setup_state."""
     cls = _build_local_env_class()
@@ -693,4 +754,5 @@ if __name__ == "__main__":
     test_guided_json_off_when_disabled()
     test_final_instance_reward_returns_last_outcome()
     test_dataset_seed_is_threaded_into_task_kwargs()
+    test_observation_propagated_as_feedback_at_instance_boundary()
     print("All smoke tests passed.")
