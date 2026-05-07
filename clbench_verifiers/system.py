@@ -84,6 +84,8 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
         use_notepad: bool = False,
         notepad_max_chars: int = 4000,
         clear_notepad_between_instances: bool = False,
+        clear_context_between_instances: bool = False,
+        enable_guided_json: bool = False,
     ):
         if not _CLBENCH_AVAILABLE:  # pragma: no cover
             raise ImportError(
@@ -102,6 +104,8 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
         self.use_notepad = use_notepad
         self.notepad_max_chars = notepad_max_chars
         self.clear_notepad_between_instances = clear_notepad_between_instances
+        self.clear_context_between_instances = clear_context_between_instances
+        self.enable_guided_json = enable_guided_json
 
         # Lazy client — construct on first use so module imports stay cheap.
         self._client = None
@@ -204,6 +208,21 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
             and self._last_instance_id is not None
         ):
             self._notepad = ""
+        # Mirror the training-time history wipe at instance boundaries: only
+        # the system message survives, so the policy's only memory channel
+        # is the notepad (when use_notepad=True). Without this the eval
+        # distribution diverges from training and the comparison is unfair.
+        if (
+            self._instance_started
+            and self.clear_context_between_instances
+            and self._last_instance_id is not None
+        ):
+            head = (
+                self._messages[:1]
+                if self._messages and self._messages[0].get("role") == "system"
+                else []
+            )
+            self._messages = list(head)
         self._last_instance_id = query.instance_id
 
         # Pick the schema we'll show / parse against.
@@ -218,12 +237,30 @@ class VLLMClientSystem(ContinualLearningSystem):  # type: ignore[misc]
         self._messages.append(self._format_user_message(query))
         self._truncate_history()
 
-        completion = client.chat.completions.create(
+        # Build sampling kwargs. When guided_json is enabled we pass the
+        # Pydantic-derived schema with notepad_update force-marked required
+        # (same logic used during training in env._apply_constraint), so
+        # the eval policy is held to the same grammar as training.
+        kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=self._messages,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
+        if self.enable_guided_json and prompt_schema is not None:
+            try:
+                schema_dict = prompt_schema.model_json_schema()
+                props = schema_dict.get("properties") if isinstance(schema_dict, dict) else None
+                if isinstance(props, dict) and "notepad_update" in props:
+                    required = list(schema_dict.get("required") or [])
+                    if "notepad_update" not in required:
+                        required.append("notepad_update")
+                        schema_dict["required"] = required
+                kwargs["extra_body"] = {"guided_json": schema_dict}
+            except Exception:  # pragma: no cover - schema serialisation rare
+                pass
+
+        completion = client.chat.completions.create(**kwargs)
         text = completion.choices[0].message.content or ""
 
         # Record token usage if the server reports it.
