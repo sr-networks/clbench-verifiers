@@ -99,20 +99,77 @@ uv run --python 3.12 python scripts/eval_remote.py \
   --task-arg opponent_policy=calling_station
 ```
 
+### Training results (100 steps each)
+
+Final-hand reward per rollout, averaged over the last 10 training
+steps (90-99):
+
+| Run | Env ver | Start (steps 0-9) | End (steps 90-99) | Δ |
+|---|---|---|---|---|
+| **ON memory (v0.1.16, post-fix)** | 0.1.16 | −1.17 chips/hand | **+0.28** | **+1.45** |
+| OFF memory (v0.1.14, control) | 0.1.14 | −0.91 | −0.53 | +0.38 |
+| ON memory (v0.1.14, broken schema) | 0.1.14 | −0.74 | −0.78 | flat |
+
+Crossing positive only happens after the v0.1.16 schema fix. The
+broken-schema ON run (v0.1.14, paid the schema tax with no working
+memory channel) ended slightly worse than where it started. Plot:
+`docs/training_curve.png`.
+
+### Held-out eval (CLBench `run_benchmark` via `scripts/eval_remote.py`)
+
+ON-memory checkpoint deployed on Prime Inference, evaluated against
+the `calling_station` opponent at **20 different task seeds**, with
+`num_instances=2` (matches the training distribution) and `runs=5`
+(5 permutation orderings per seed). Stateful = notepad active,
+stateless baseline = system reset between instances:
+
+| | Mean | Std (across 20 seeds) | Std-error of mean | 95% CI |
+|---|---|---|---|---|
+| Stateful reward | −0.54 chips/hand | 1.25 | 0.28 | — |
+| Stateless baseline | −0.75 | 2.05 | 0.46 | — |
+| **`mean_gain` (stateful − stateless)** | **+0.21** | 2.03 | 0.45 | **[−0.70, +1.11]** |
+
+`mean_gain` is the cleanest "did the notepad help at inference?"
+measure. Point estimate is positive but **not statistically
+distinguishable from zero** — 95% CI straddles zero. Per-seed
+variance dominates: a single all-in pot can swing a 12-hand mean
+by ±5 chips, and we see seeds where memory looks worth +6.7 BB
+and others where it looks worth −3.2 BB. They cancel.
+
+### What we can claim, what we can't
+
+- ✅ **Schema-fix bug found and shipped (v0.1.16)**: ``notepad_update``
+  is now actually required by vLLM's grammar; notepad-write count
+  per rollout climbed from 4.5 (broken) to 6.5 (working).
+- ✅ **Notepad training produced a meaningfully better one-shot
+  policy**: ON's stateless baseline is much better than what the
+  v0.1.14 OFF run finished training at (−0.75 vs OFF training-end
+  −0.53 vs OFF eval-stateless −0.75, all chips/hand on slightly
+  different distributions). Some of this is plausibly the extra
+  gradient channel from notepad-write tokens correlating with
+  hand-2 outcomes; some is just stochastic divergence between
+  training runs.
+- ⚠️ **Cannot yet claim memory helps at eval time**: `+0.21 ± 0.45`
+  point estimate is suggestive but inside noise.
+- ❌ **Cannot claim memory hurts**: the earlier single-seed `−0.45`
+  finding was firmly in the noise band — moving from 1 seed to 20
+  flipped the sign and shrank SE 2×, without pinning either side.
+
 ### Next
 
-1. v0.1.16 notepad-on run (`qa93yufj2dkhnvmjf8fixxpo`) finishes → check
-   whether `notepad_update` is now consistently emitted, whether the
-   hand-2 prompt gets the `=== YOUR NOTEPAD ===` block, and whether
-   the training reward trajectory differs from v0.1.14.
-2. Deploy both checkpoints (v0.1.14 no-memory + v0.1.16 notepad-on)
-   and run `eval_remote.py` on each. The `mean_gain` delta is the
-   memory-on-vs-off answer.
-3. If v0.1.16 still doesn't beat no-memory in eval, the conclusion is
-   that this scale (Qwen3.5-2B, 100 steps, 2 hands/rollout, calling
-   station opponent) doesn't give GRPO enough signal to train memory
-   use. Possible next steps: longer training, more hands per rollout,
-   harder opponent.
+1. **Longer training** at v0.1.16 settings (300-500 steps). 100 steps
+   gave only ~75 effective steps with a working memory channel
+   (the schema bug persisted ~25 steps into the v0.1.14 run);
+   GRPO needs more iterations to learn *what* to write down, not
+   just to fill the field.
+2. **Or much larger eval N** (60-80 task seeds): would tighten the
+   `mean_gain` CI to roughly ±0.3, enough to firmly cross zero on
+   either side. Cheap (~$3, ~1.5h) but doesn't shift the underlying
+   training signal.
+3. **Harder opponent**: `calling_station` is so exploitable a
+   constant strategy already does well. Switching to
+   `tight_aggressive` or a mixed schedule would punish a
+   forgetful policy more, raising the value of working memory.
 
 ## Historical status (2026-05-06, evening)
 
