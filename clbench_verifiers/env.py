@@ -678,6 +678,61 @@ def _make_env_class():
             # Default path: same as the parent's get_prompt_messages.
             return concat_messages([prev_messages, new_user_msgs])
 
+        async def render_completion(self, state):
+            """
+            Render ``state["completion"]`` as the chronological union of every
+            trajectory step's new messages, so the dashboard shows all hands.
+
+            Cosmetic only. The token-level policy update reads each step's
+            ``tokens.prompt_ids`` / ``completion_ids`` (captured at sampling
+            time with the exact, history-wiped context), and the rubric reads
+            from ``state["clbench"]`` (per-rollout accumulator across all
+            turns). Neither path touches ``state["completion"]``, so this
+            override changes only what the rollout viewer displays.
+
+            Default verifiers behavior takes only the last step's prompt +
+            completion — under ``clear_history_between_instances=True`` that
+            erases every instance except the last one from the visible
+            transcript. We instead diff each step's prompt against the
+            *previous* step's prompt+completion: anything shared with the
+            previous turn is already rendered and gets skipped; whatever's
+            new (a follow-up message within an instance, OR a fully wiped
+            restart) gets appended, then the step's completion appends.
+            """
+            traj = state.get("trajectory") or []
+            if not traj:
+                state["completion"] = []
+                return
+
+            rendered: list = []
+            prev_full: list = []
+            for step in traj:
+                step_prompt = list(step["prompt"])
+                common = 0
+                for a, b in zip(prev_full, step_prompt):
+                    if a == b:
+                        common += 1
+                    else:
+                        break
+                rendered.extend(step_prompt[common:])
+                rendered.extend(step["completion"])
+                prev_full = step_prompt + list(step["completion"])
+
+            if state.get("final_env_response"):
+                # Mirror the parent's normalize step so non-list payloads land
+                # as a list of message dicts. Lazy-import to keep this method
+                # callable in unit tests without verifiers installed.
+                from verifiers.utils.message_utils import (  # type: ignore
+                    maybe_normalize_messages,
+                )
+                final_resp = maybe_normalize_messages(
+                    state["final_env_response"], field_name="final_env_response"
+                )
+                rendered.extend(final_resp)
+
+            prompt_messages = state["prompt"]
+            state["completion"] = rendered[len(prompt_messages):]
+
         # NOTE: ``Environment.is_completed`` is ``@final`` and walks all
         # ``@vf.stop``-decorated methods to decide termination. We register
         # our condition that way instead of overriding ``is_completed``.

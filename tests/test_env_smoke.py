@@ -793,6 +793,67 @@ def test_input_token_budget_fires_when_exceeded():
     assert asyncio.run(fires()) is True
 
 
+def test_render_completion_chronological_across_instances():
+    """``render_completion`` must show all instances' turns in order.
+
+    With ``clear_history_between_instances=True``, the last trajectory step's
+    prompt only contains the final instance's history. Verifiers' default
+    ``render_completion`` would slice from there and lose every prior
+    instance's turns. Our override walks the trajectory and diffs each step
+    against the previous step's prompt+completion, so wiped restarts produce
+    new visible content rather than being skipped or duplicated.
+    """
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=True,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        enable_guided_json=False,
+        clear_history_between_instances=True,
+        rubric=_Rubric(),
+        max_turns=8,
+        max_input_tokens_per_rollout=-1,
+    )
+
+    sys_msg = {"role": "system", "content": "S"}
+    h1pf = {"role": "user", "content": "Hand #1 PREFLOP"}
+    a1pf = {"role": "assistant", "content": "RAISE 30"}
+    h1fl = {"role": "user", "content": "Hand #1 FLOP"}
+    a1fl = {"role": "assistant", "content": "CHECK"}
+    h2pf = {"role": "user", "content": "Hand #2 PREFLOP"}
+    a2pf = {"role": "assistant", "content": "CALL"}
+    h2fl = {"role": "user", "content": "Hand #2 FLOP"}
+    a2fl = {"role": "assistant", "content": "RAISE 10"}
+
+    state = {
+        "prompt": [sys_msg, h1pf],
+        "trajectory": [
+            {"prompt": [sys_msg, h1pf], "completion": [a1pf]},
+            {"prompt": [sys_msg, h1pf, a1pf, h1fl], "completion": [a1fl]},
+            # Instance boundary: history wiped. New prompt diverges at index 1.
+            {"prompt": [sys_msg, h2pf], "completion": [a2pf]},
+            {"prompt": [sys_msg, h2pf, a2pf, h2fl], "completion": [a2fl]},
+        ],
+    }
+
+    asyncio.run(env.render_completion(state))
+
+    # Expected: state["prompt"] = [sys, h1pf]; state["completion"] should be
+    # the rest in chronological order, with h2pf appearing after a1fl
+    # (the wipe-aligned new content), no duplication.
+    expected_completion = [a1pf, h1fl, a1fl, h2pf, a2pf, h2fl, a2fl]
+    assert state["completion"] == expected_completion
+
+
 if __name__ == "__main__":
     test_parse_action_extracts_fenced_json()
     test_parse_action_handles_inline_json()
@@ -805,6 +866,7 @@ if __name__ == "__main__":
     test_env_notepad_truncates_oversized()
     test_input_token_budget_disabled_by_default_in_tests()
     test_input_token_budget_fires_when_exceeded()
+    test_render_completion_chronological_across_instances()
     test_format_score_increases_with_partial_compliance()
     test_env_records_best_format_score_per_rollout()
     test_latest_assistant_text_reads_reasoning_content()
