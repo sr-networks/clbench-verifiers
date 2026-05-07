@@ -10,7 +10,8 @@ model = "Qwen/Qwen3.5-2B"
 max_steps = 100                # half-budget exploratory run
 batch_size = 8                 # = rollouts_per_example; one distinct prompt × 8 rollouts
 rollouts_per_example = 8       # group size up from 4 → tighter advantage estimates
-learning_rate = 5e-5           # 1e-5 showed positives accelerating; pushing 5× higher
+learning_rate = 1e-5           # back to 1e-5 for the clean 2-hand memory test;
+                                # 5e-5 was over-aggressive on multi-hand
 lora_alpha = 16
 
 [sampling]
