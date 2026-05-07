@@ -11,7 +11,82 @@ system, and two entry points). Both upstream repos move fast and have
 different release cadences, so we keep the integration as a third-party shim
 rather than forking either one.
 
-## Status (2026-05-06, evening)
+## Current state of experiments (2026-05-07)
+
+**Headline:** at v0.1.14 the notepad memory channel was silently broken —
+`notepad_update` was nominally required by the TOML schema but the env's
+own injection clobbered the constraint, so vLLM let the model omit the
+field. With no writes, `rs.notepad` stayed empty and the
+`=== YOUR NOTEPAD ===` block was never rendered into hand 2's prompt.
+Notepad-on training paid a schema tax (extra field in the response space)
+without ever using the memory channel. Direct comparison: no-memory
+control IMPROVED more than notepad-on over the same 100 steps.
+
+| Run | Env ver | Config | Final reward Δ (start → end) | Mean reward Δ | Note |
+|---|---|---|---|---|---|
+| `z3f9leb8…` notepad-on | 0.1.14 | 2-hand, history wipe, final-instance reward | −0.74 → −0.78 (flat) | −1.54 → −0.66 (+0.88) | Memory channel inactive — `notepad_update` field omitted on most turns |
+| `ond5k5m2…` no-memory | 0.1.14 | same minus notepad | −0.91 → −0.53 (**+0.38**) | −2.56 → −0.56 (+2.00) | Improves more — no schema tax, all gradient on poker play |
+| `wvajchd9…` notepad-on | 0.1.15 | render fix only | (training math identical to v0.1.14) | — | Dashboard fix; same memory-channel bug |
+| `qa93yufj…` notepad-on | **0.1.16** | schema enforcement fix | ⏳ in progress | ⏳ | First run with the memory channel actually working |
+
+### What's fixed at v0.1.16
+
+1. **Pydantic-derived schema `required` list now includes `notepad_update`.**
+   Pydantic's `Optional[str] = None` produced a JSON schema where the
+   field was in `properties` but not `required`. Post-process the dict
+   after `model_json_schema()` to add it. `anyOf=[string, null]` still
+   permits null mid-instance; only completely-absent gets rejected by
+   vLLM's grammar. (`clbench_verifiers/env.py::_apply_constraint`)
+2. **Env-side guided_json injection no longer clobbers TOML overrides.**
+   Skip injection when `state["sampling_args"]["extra_body"]["guided_json"]`
+   already exists. The TOML version (with `maxLength` caps and explicit
+   `required` lists) wins.
+3. **Dashboard rendering shows all hands chronologically** (v0.1.15).
+   With `clear_history_between_instances=True`, verifiers' default
+   `render_completion` only saw the last instance's tail. Override it
+   to walk every trajectory step and append new content in order. Pure
+   cosmetic — doesn't change reward, advantage, or training tokens.
+
+### Eval harness ready
+
+`scripts/eval_remote.py` runs CLBench's official `run_benchmark` against
+any OpenAI-compatible endpoint (Prime deployments, vLLM serve, anywhere).
+Outputs `mean_reward`, `baseline_mean` (stateless reset), and
+`mean_gain` (stateful − stateless = "did memory help?").
+
+`VLLMClientSystem` extended with two flags so eval matches training
+distribution:
+- `clear_context_between_instances=True` — mirrors the training-time
+  history wipe
+- `enable_guided_json=True` — sends the same `notepad_update`-required
+  schema vLLM enforced during sampling
+
+```bash
+prime deployments create <checkpoint_id>          # → endpoint URL
+uv run --python 3.12 python scripts/eval_remote.py \
+  --base-url <url> --model <name> --api-key-env PRIME_API_KEY \
+  --use-notepad --enable-guided-json \
+  --clear-context-between-instances \
+  --num-instances 10 --runs 5 \
+  --task-arg opponent_policy=calling_station
+```
+
+### Next
+
+1. v0.1.16 notepad-on run (`qa93yufj2dkhnvmjf8fixxpo`) finishes → check
+   whether `notepad_update` is now consistently emitted, whether the
+   hand-2 prompt gets the `=== YOUR NOTEPAD ===` block, and whether
+   the training reward trajectory differs from v0.1.14.
+2. Deploy both checkpoints (v0.1.14 no-memory + v0.1.16 notepad-on)
+   and run `eval_remote.py` on each. The `mean_gain` delta is the
+   memory-on-vs-off answer.
+3. If v0.1.16 still doesn't beat no-memory in eval, the conclusion is
+   that this scale (Qwen3.5-2B, 100 steps, 2 hands/rollout, calling
+   station opponent) doesn't give GRPO enough signal to train memory
+   use. Possible next steps: longer training, more hands per rollout,
+   harder opponent.
+
+## Historical status (2026-05-06, evening)
 
 | Component | State | Notes |
 |---|---|---|
