@@ -1,0 +1,61 @@
+# Prime Hosted Training — Qwen3.5-2B, 2-hand rollouts, NO MEMORY.
+#
+# Direct counterpart to prime_qwen3_5_2b_notepad.toml: same model, same LR,
+# same 2-hand rollouts, same reward weighting, same per-step seed, same
+# history-wipe between instances — but NO notepad. The model can't carry
+# anything from hand 1 to hand 2 except whatever happens to land in the
+# policy weights via the gradient update.
+#
+# Used to isolate the memory contribution. If notepad-on outperforms
+# notepad-off after equal training, we have evidence GRPO trained the
+# memory-write behaviour. If they match, the gains came from generic
+# play improvements, not memory.
+
+name = "clbench-poker-qwen3.5-2b-no-memory"
+model = "Qwen/Qwen3.5-2B"
+
+max_steps = 100
+batch_size = 8
+rollouts_per_example = 8
+learning_rate = 1e-5
+lora_alpha = 16
+
+[sampling]
+max_tokens = 1024
+temperature = 1.0
+enable_thinking = false
+
+# guided_json with the plain (no notepad_update field) PokerAction schema.
+[sampling.extra_body.guided_json]
+type = "object"
+title = "PokerAction"
+description = "Structured poker action response."
+required = ["thinking", "action"]
+
+[sampling.extra_body.guided_json.properties.thinking]
+type = "string"
+title = "Thinking"
+description = "Your reasoning about the hand situation and why you chose this action"
+
+[sampling.extra_body.guided_json.properties.action]
+type = "string"
+title = "Action"
+description = "One of: FOLD, CALL, CHECK, RAISE"
+
+[sampling.extra_body.guided_json.properties.amount]
+title = "Amount"
+description = "Raise amount (only required for RAISE); leave null otherwise"
+anyOf = [{ type = "integer" }, { type = "null" }]
+
+[[env]]
+id = "sr-networks/clbench-poker"
+# 2-hand rollouts with history wipe and NO notepad — the no-memory
+# control. The only thing different from the notepad config:
+#   use_notepad = false  (was true)
+# All other knobs identical so the comparison isolates memory.
+args = { use_notepad = false, max_instances_per_rollout = 2, max_turns = 32, max_input_tokens_per_rollout = 16000, end_on_parse_failure = false, clear_history_between_instances = true, mean_instance_reward_weight = 0.0, final_instance_reward_weight = 1.0, task_kwargs = { num_instances = 2, opponent_policy = "calling_station", seed = 0 } }
+
+[val]
+num_examples = 8
+rollouts_per_example = 1
+interval = 10
