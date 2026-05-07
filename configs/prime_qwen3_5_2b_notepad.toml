@@ -15,16 +15,13 @@ learning_rate = 1e-5           # back to 1e-5 for the clean 2-hand memory test;
 lora_alpha = 16
 
 [sampling]
-max_tokens = 1024
+max_tokens = 4096                # was 1024 — too short; the model truncated mid-`thinking`
 temperature = 1.0
-# Qwen3.5 thinking-model channel routing — see prime_qwen3_5_2b.toml for the
-# rationale. With notepad mode the policy is already structured-output-heavy,
-# so a separate reasoning channel is doubly redundant.
 enable_thinking = false
 
-# Constrained decoding via vLLM guided_json. The schema below is the
-# notepad-augmented PokerAction (the env adds an optional `notepad_update`
-# field when use_notepad=true).
+# Constrained decoding via vLLM guided_json. Notepad-augmented PokerAction.
+# `thinking` and `notepad_update` carry maxLength caps so the policy is
+# forced to be terse — prevents the rambling that ate the 1024 budget.
 [sampling.extra_body.guided_json]
 type = "object"
 title = "PokerActionWithNotepad"
@@ -34,7 +31,8 @@ required = ["thinking", "action"]
 [sampling.extra_body.guided_json.properties.thinking]
 type = "string"
 title = "Thinking"
-description = "Your reasoning about the hand situation and why you chose this action"
+description = "Brief reasoning (≤50 words). State the action and a one-sentence justification."
+maxLength = 600
 
 [sampling.extra_body.guided_json.properties.action]
 type = "string"
@@ -48,8 +46,8 @@ anyOf = [{ type = "integer" }, { type = "null" }]
 
 [sampling.extra_body.guided_json.properties.notepad_update]
 title = "Notepad update"
-description = "Optional: full new contents of the persistent notepad (replaces previous). Leave null to keep notepad unchanged."
-anyOf = [{ type = "string" }, { type = "null" }]
+description = "Optional new full notepad content (≤100 words). Leave null to keep unchanged."
+anyOf = [{ type = "string", maxLength = 800 }, { type = "null" }]
 
 [[env]]
 id = "sr-networks/clbench-poker"

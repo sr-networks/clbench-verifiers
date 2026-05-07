@@ -482,14 +482,18 @@ def _make_env_class():
             base = (
                 "You are an agent solving a continual-learning benchmark task. "
                 "Respond every turn with a single JSON object — no prose, no "
-                "markdown fences — matching the schema for the current turn."
+                "markdown fences — matching the schema for the current turn. "
+                "Keep `thinking` brief: ≤50 words. State the action and a one-"
+                "sentence reason. Do not enumerate cards or replay the board "
+                "in prose; the board state is already in the prompt."
             )
             if self.use_notepad:
                 base += (
                     " You may write to a persistent notepad via the optional "
                     "`notepad_update` field. The notepad is shown at the start "
                     "of every new task instance, so use it to record durable, "
-                    "transferable observations rather than per-turn scratch work."
+                    "transferable observations rather than per-turn scratch work. "
+                    "Keep `notepad_update` ≤100 words."
                 )
             if not self.schema_hint_in_system or schema is None:
                 return base

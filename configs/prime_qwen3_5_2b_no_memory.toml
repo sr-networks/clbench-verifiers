@@ -21,11 +21,11 @@ learning_rate = 1e-5
 lora_alpha = 16
 
 [sampling]
-max_tokens = 1024
+max_tokens = 4096
 temperature = 1.0
 enable_thinking = false
 
-# guided_json with the plain (no notepad_update field) PokerAction schema.
+# Plain PokerAction schema with brevity cap on `thinking`.
 [sampling.extra_body.guided_json]
 type = "object"
 title = "PokerAction"
@@ -35,7 +35,8 @@ required = ["thinking", "action"]
 [sampling.extra_body.guided_json.properties.thinking]
 type = "string"
 title = "Thinking"
-description = "Your reasoning about the hand situation and why you chose this action"
+description = "Brief reasoning (≤50 words). State the action and a one-sentence justification."
+maxLength = 600
 
 [sampling.extra_body.guided_json.properties.action]
 type = "string"
