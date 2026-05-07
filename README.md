@@ -11,6 +11,34 @@ system, and two entry points). Both upstream repos move fast and have
 different release cadences, so we keep the integration as a third-party shim
 rather than forking either one.
 
+## What we're actually trying to do (plain English)
+
+When an AI plays a series of related rounds — say, several poker hands
+against the same opponent — a smart agent should *remember* what it
+learned earlier and use it later. Most language models don't do this on
+their own: each round looks fresh to them. A common workaround is to
+give the model a "notepad": a small text buffer it can write to during
+one round and read from on the next.
+
+Our question is: **can we train a small language model, using reinforcement
+learning, to actually *use* a notepad well?** That is, can it learn
+*on its own* — without us hand-coding the rules — to jot down useful
+observations about its opponent in early rounds and exploit those
+observations in later rounds?
+
+The setup: a 2-billion-parameter open-source model (Qwen3.5-2B) plays
+poker against a deliberately exploitable opponent (the "calling
+station," who calls every bet). A model that spots the exploit early
+and writes it down should beat a model that has no memory at all. We
+test that by training the same model two ways — with and without the
+notepad — and comparing them on a held-out evaluation.
+
+The harder version of the question is: even if the model with a
+notepad ends up winning, **is it winning *because* of the notepad, or
+just because the extra training made it generically better at poker?**
+A lot of the engineering effort in this repo is about answering that
+second question cleanly.
+
 ## Current state of experiments (2026-05-07)
 
 **Headline:** at v0.1.14 the notepad memory channel was silently broken —
