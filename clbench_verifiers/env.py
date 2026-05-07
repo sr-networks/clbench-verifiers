@@ -489,11 +489,14 @@ def _make_env_class():
             )
             if self.use_notepad:
                 base += (
-                    " You may write to a persistent notepad via the optional "
-                    "`notepad_update` field. The notepad is shown at the start "
-                    "of every new task instance, so use it to record durable, "
-                    "transferable observations rather than per-turn scratch work. "
-                    "Keep `notepad_update` ≤100 words."
+                    " The `notepad_update` field is REQUIRED on every action. "
+                    "At the start of each new task instance, use it to record "
+                    "concrete, transferable observations from the previous "
+                    "instance — opponent tendencies, what worked, what didn't. "
+                    "The notepad is the ONLY thing that survives between "
+                    "instances, so write what you'd want to know next time. "
+                    "Keep it ≤100 words. Set to null only if you genuinely "
+                    "have nothing new to add (e.g. mid-instance turns)."
                 )
             if not self.schema_hint_in_system or schema is None:
                 return base

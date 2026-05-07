@@ -25,8 +25,8 @@ enable_thinking = false
 [sampling.extra_body.guided_json]
 type = "object"
 title = "PokerActionWithNotepad"
-description = "Structured poker action with optional persistent notepad update."
-required = ["thinking", "action"]
+description = "Structured poker action with persistent notepad update (required field; null allowed only mid-instance)."
+required = ["thinking", "action", "notepad_update"]
 
 [sampling.extra_body.guided_json.properties.thinking]
 type = "string"
