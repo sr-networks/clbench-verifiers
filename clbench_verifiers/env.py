@@ -109,6 +109,65 @@ def _load_verifiers():
     return vf
 
 
+_LEGAL_ACTION_LINE_RE = None
+
+
+def _extract_legal_actions(prompt_text: str) -> Optional[list[str]]:
+    """
+    Pull the per-turn legal action set out of CLBench's free-text prompt.
+
+    The poker task's prompt always contains a block like::
+
+        What's your action?
+          FOLD - fold your hand
+          CALL - call the bet (costs 5 chips)
+          CHECK - check (if no bet to call)
+          RAISE X - raise to X total (min raise to 20)
+
+    This isn't a perfect signal — CLBench currently lists CHECK in the menu
+    even when there's a bet to call (it just adds an "if no bet to call"
+    parenthetical). But the *legality status* is encoded elsewhere in the
+    prompt:
+
+      - "Situation: Opponent raised to 10 (you need 5 to call)" → CHECK is
+        illegal, CALL/FOLD/RAISE legal.
+      - "Situation: Action to you (you can check or raise)" → CHECK/RAISE
+        legal, CALL/FOLD legal too (CALL costs 0).
+
+    We use the Situation line as the source of truth where present.
+    """
+    if not prompt_text:
+        return None
+    sit = None
+    for line in prompt_text.splitlines():
+        s = line.strip()
+        if s.startswith("Situation:"):
+            sit = s.lower()
+            break
+    if sit is None:
+        return None
+    legal: list[str] = []
+    if "you can check" in sit:
+        # Pre-flop free check on big blind, or post-flop with no bet
+        legal.extend(["CHECK", "RAISE"])
+        if "fold" in sit or True:  # FOLD is generally always legal
+            legal.append("FOLD")
+    elif "you need" in sit and "to call" in sit:
+        legal.extend(["FOLD", "CALL", "RAISE"])
+    elif "all-in" in sit:
+        legal.extend(["FOLD", "CALL"])
+    else:
+        # Unknown phrasing → don't constrain; let the model pick anything.
+        return None
+    # Deduplicate while preserving order.
+    seen, out = set(), []
+    for a in legal:
+        if a not in seen:
+            seen.add(a)
+            out.append(a)
+    return out or None
+
+
 def _format_score(text: str, schema, *, parsed_ok: bool) -> float:
     """
     Heuristic 0..1 score: how close is ``text`` to a valid action JSON?
@@ -395,6 +454,17 @@ def _make_env_class():
                     f"=== PARSE ERROR ===\n{error}\n"
                     "Respond again with a single JSON object that matches the "
                     "schema. Do not add prose outside the JSON."
+                )
+            # Hoist legal actions to the top of the user message — the task's
+            # free-text prompt buries them in a menu where the model often
+            # ignores legality cues. Explicit upfront constraint matters.
+            legal = _extract_legal_actions(getattr(query, "prompt", "") or "")
+            if legal:
+                parts.append(
+                    "=== LEGAL ACTIONS THIS TURN ===\n"
+                    + ", ".join(legal)
+                    + "\n(only emit one of these as the action field; "
+                    "others will be rejected and re-prompted)"
                 )
             parts.append(query.prompt)
             schema = prompt_schema or query.response_schema
@@ -702,6 +772,17 @@ def _make_env_class():
 
             obs = step_result.observation
             instance_complete = bool(getattr(obs, "instance_complete", True))
+
+            # Treat illegal-action observations the same way as parse failures:
+            # the model's output was structurally valid but the chosen action
+            # wasn't legal for the current state. Without this they're "free"
+            # turn-burn — under final_instance_reward + history-wipe the
+            # rollout exhausts its turn/token budget on illegal actions and
+            # never reaches later instances.
+            obs_text = (getattr(obs, "content", "") or "")
+            if obs_text.startswith("Invalid poker action:") or obs_text.lower().startswith("invalid"):
+                rs.parse_failures += 1
+                rs.last_error = obs_text.splitlines()[0][:200] if obs_text else "illegal_action"
 
             # Capture instance outcomes as they appear (more reliable than
             # waiting for end-of-rollout because some tasks finalize lazily).

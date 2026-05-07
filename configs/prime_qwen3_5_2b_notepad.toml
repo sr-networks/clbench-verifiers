@@ -64,7 +64,7 @@ id = "sr-networks/clbench-poker"
 #     help the final hand?"
 #   - max_turns=24 (4 hands × ~6 turns each) since history is wiped between
 #     hands the per-instance context stays bounded.
-args = { use_notepad = true, max_instances_per_rollout = 4, notepad_max_chars = 2000, max_turns = 24, max_input_tokens_per_rollout = 8000, end_on_parse_failure = false, clear_history_between_instances = true, mean_instance_reward_weight = 0.0, final_instance_reward_weight = 1.0, task_kwargs = { num_instances = 4, opponent_policy = "calling_station", seed = 0 } }
+args = { use_notepad = true, max_instances_per_rollout = 4, notepad_max_chars = 2000, max_turns = 64, max_input_tokens_per_rollout = 24000, end_on_parse_failure = false, clear_history_between_instances = true, mean_instance_reward_weight = 0.0, final_instance_reward_weight = 1.0, task_kwargs = { num_instances = 4, opponent_policy = "calling_station", seed = 0 } }
 
 [val]
 num_examples = 8

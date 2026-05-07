@@ -483,6 +483,64 @@ def test_latest_assistant_text_reads_reasoning_content():
     assert "CALL" in env._latest_assistant_text(msgs_content_only)
 
 
+def test_legal_actions_are_extracted_from_situation_line():
+    from clbench_verifiers.env import _extract_legal_actions
+
+    preflop_facing_raise = (
+        "Hand #1 - PREFLOP\n"
+        "Pot: 15\n"
+        "Situation: Opponent raised to 10 (you need 5 to call)\n"
+        "What's your action?"
+    )
+    flop_check_to_you = (
+        "Hand #1 - FLOP\n"
+        "Situation: Action to you (you can check or raise)\n"
+    )
+    out_pf = _extract_legal_actions(preflop_facing_raise)
+    out_fl = _extract_legal_actions(flop_check_to_you)
+    assert out_pf is not None and "CHECK" not in out_pf and "CALL" in out_pf
+    assert out_fl is not None and "CHECK" in out_fl
+
+
+def test_legal_actions_prefix_appears_in_user_message():
+    """User message should carry an explicit `=== LEGAL ACTIONS THIS TURN ===`
+    header parsed from the task's prompt."""
+    cls = _build_local_env_class()
+
+    class _Rubric:
+        funcs: list = []
+        weights: list = []
+
+    env = cls(
+        task_name="exploitable_poker",
+        task_kwargs={"num_instances": 1, "seed": 0, "opponent_policy": "calling_station"},
+        max_instances_per_rollout=1,
+        schema_hint_in_system=True,
+        end_on_parse_failure=False,
+        use_notepad=False,
+        notepad_max_chars=4000,
+        max_input_tokens_per_rollout=0,
+        enable_guided_json=False,
+        clear_history_between_instances=False,
+        rubric=_Rubric(),
+        max_turns=8,
+    )
+
+    async def go():
+        state = {"messages": []}
+        await env.setup_state(state)
+        return state["prompt"][-1]["content"]
+
+    first_user = asyncio.run(go())
+    assert "LEGAL ACTIONS THIS TURN" in first_user
+    # Preflop facing a raise → CALL/FOLD/RAISE legal, CHECK not.
+    assert "CALL" in first_user and "FOLD" in first_user
+    # CHECK should not be in the legal-actions block (it'll still appear in the
+    # task's own action menu below it; we only check the LEGAL ACTIONS block).
+    legal_block = first_user.split("LEGAL ACTIONS THIS TURN", 1)[1].split("\n\n")[0]
+    assert "CHECK" not in legal_block
+
+
 def test_observation_propagated_as_feedback_at_instance_boundary():
     """When a turn ends an instance and the rollout continues to a next
     instance, the next user message must include the just-finished
@@ -755,4 +813,6 @@ if __name__ == "__main__":
     test_final_instance_reward_returns_last_outcome()
     test_dataset_seed_is_threaded_into_task_kwargs()
     test_observation_propagated_as_feedback_at_instance_boundary()
+    test_legal_actions_are_extracted_from_situation_line()
+    test_legal_actions_prefix_appears_in_user_message()
     print("All smoke tests passed.")
