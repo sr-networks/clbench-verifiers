@@ -793,6 +793,56 @@ def test_input_token_budget_fires_when_exceeded():
     assert asyncio.run(fires()) is True
 
 
+def test_guided_json_marks_notepad_update_required():
+    """The auto-injected guided_json schema must list ``notepad_update`` in
+    ``required`` when use_notepad-augmented schemas are used.
+
+    Pydantic's ``Optional[str] = None`` produces a JSON schema where the
+    field is in ``properties`` but NOT in ``required`` — vLLM's grammar
+    then accepts JSON that omits the field entirely. With the field
+    omitted, the model never writes notes, ``rs.notepad`` stays empty,
+    and the cross-instance notepad block never gets rendered.
+    """
+    cls = _build_local_env_class()
+    from clbench_verifiers.notepad import build_schema_with_notepad
+    from pydantic import BaseModel
+
+    class _PokerSchema(BaseModel):
+        thinking: str
+        action: str
+
+    augmented = build_schema_with_notepad(_PokerSchema)
+    sa = cls._apply_constraint({}, augmented)
+
+    schema = sa["extra_body"]["guided_json"]
+    assert "notepad_update" in (schema.get("properties") or {})
+    assert "notepad_update" in (schema.get("required") or []), (
+        "notepad_update must be required so vLLM's grammar rejects "
+        "completions that omit it"
+    )
+
+
+def test_guided_json_respects_existing_extra_body_guided_json():
+    """If sampling_args already has extra_body.guided_json (from a TOML
+    `[sampling.extra_body.guided_json]` block), don't clobber it."""
+    cls = _build_local_env_class()
+    from pydantic import BaseModel
+
+    class _Schema(BaseModel):
+        thinking: str
+        action: str
+
+    pre_existing = {
+        "type": "object",
+        "required": ["thinking", "action", "notepad_update"],
+        "properties": {"thinking": {"type": "string"}},
+    }
+    sa = cls._apply_constraint(
+        {"extra_body": {"guided_json": pre_existing}}, _Schema
+    )
+    assert sa["extra_body"]["guided_json"] is pre_existing
+
+
 def test_render_completion_chronological_across_instances():
     """``render_completion`` must show all instances' turns in order.
 
@@ -866,6 +916,8 @@ if __name__ == "__main__":
     test_env_notepad_truncates_oversized()
     test_input_token_budget_disabled_by_default_in_tests()
     test_input_token_budget_fires_when_exceeded()
+    test_guided_json_marks_notepad_update_required()
+    test_guided_json_respects_existing_extra_body_guided_json()
     test_render_completion_chronological_across_instances()
     test_format_score_increases_with_partial_compliance()
     test_env_records_best_format_score_per_rollout()

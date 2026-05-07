@@ -595,6 +595,15 @@ def _make_env_class():
             sampling_args dict. We set both forms because Prime's hosted
             inference pool may strip one and forward the other; whichever
             survives, vLLM constrains generation to valid JSON.
+
+            Post-processes the Pydantic-generated schema to mark
+            ``notepad_update`` as a required property when present. Pydantic's
+            ``Optional[str] = None`` produces a schema where the field is in
+            ``properties`` but NOT in ``required``, so vLLM's grammar lets the
+            model omit it entirely. Empty notepad → no replay block at the
+            instance boundary → memory channel is dead. Force-add it to
+            ``required``; ``anyOf=[string, null]`` still permits null values
+            mid-instance, only completely-absent gets rejected.
             """
             try:
                 schema_dict = schema.model_json_schema()
@@ -602,9 +611,21 @@ def _make_env_class():
                 logger.warning("guided_json: schema serialization failed: %s", exc)
                 return sampling_args
 
+            props = schema_dict.get("properties") if isinstance(schema_dict, dict) else None
+            if isinstance(props, dict) and "notepad_update" in props:
+                required = list(schema_dict.get("required") or [])
+                if "notepad_update" not in required:
+                    required.append("notepad_update")
+                    schema_dict["required"] = required
+
+            # If the caller already set guided_json (typically via TOML's
+            # `[sampling.extra_body.guided_json]`), prefer theirs — they may
+            # have stricter constraints (maxLength caps, required-list edits)
+            # that we don't reproduce here. We only inject when nothing's set.
             extra_body = sampling_args.get("extra_body")
             extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
-            extra_body["guided_json"] = schema_dict
+            if "guided_json" not in extra_body:
+                extra_body["guided_json"] = schema_dict
             sampling_args["extra_body"] = extra_body
 
             sampling_args["response_format"] = {
