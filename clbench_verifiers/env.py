@@ -246,6 +246,7 @@ def build_clbench_env(
     schema_hint_in_system: bool = True,
     parse_failure_penalty: float = -1.0,
     format_shaping_weight: float = 0.1,
+    query_efficiency_weight: float = 0.3,
     end_on_parse_failure: bool = True,
     use_notepad: bool = False,
     notepad_max_chars: int = 4000,
@@ -313,6 +314,7 @@ def build_clbench_env(
     rubric = build_clbench_rubric(
         parse_failure_penalty=parse_failure_penalty,
         format_shaping_weight=format_shaping_weight,
+        query_efficiency_weight=query_efficiency_weight,
         mean_instance_reward_weight=mean_instance_reward_weight,
         final_instance_reward_weight=final_instance_reward_weight,
         extra_funcs=rubric_funcs or [],

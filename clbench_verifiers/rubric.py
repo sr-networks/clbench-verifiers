@@ -92,6 +92,51 @@ async def notepad_length_chars(*, state=None, **_kwargs) -> float:
     return float(len(getattr(rs, "notepad", ""))) if rs else 0.0
 
 
+async def query_efficiency_reward(*, state=None, **_kwargs) -> float:
+    """
+    Variance-injecting shaping for tasks where CLBench's per-instance reward
+    is 0/1 and the cold-start policy bottoms out at 0.
+
+    Returns the mean over instances of ``(max_queries - num_queries) /
+    max_queries``: 1.0 when the rollout submitted answers without exploring
+    (probably wrong but quick), 0.0 when the model used the full query
+    budget on every instance, linear in between. ``database_exploration``
+    populates ``InstanceOutcome.metadata.num_queries``; tasks that don't
+    expose this metadata produce 0.0 (no contribution).
+
+    Why this is needed: CLBench's database_exploration reward is
+    ``1 − num_queries / max_queries`` for correct answers and ``0`` for
+    wrong answers. Cold-start: every rollout answers everything wrong,
+    every reward is 0, every group has zero advantage, GRPO has no
+    gradient. This component varies with how many queries each rollout
+    used — different exploration strategies → different rollout rewards
+    → non-zero advantages — so gradient flows even before the policy
+    starts answering correctly.
+
+    Weighted at 0.3 by default in ``build_clbench_rubric`` (small enough
+    to not dominate once correct answers start appearing; large enough
+    to push the cold-start group apart).
+    """
+    rs = _get_state(state)
+    if rs is None or not rs.instance_outcomes:
+        return 0.0
+    contributions: list[float] = []
+    for outcome in rs.instance_outcomes:
+        meta = getattr(outcome, "metadata", None) or {}
+        nq = meta.get("num_queries")
+        if nq is None:
+            continue
+        # Be defensive about the budget — some tasks may expose a
+        # per-question budget; fall back to a sane default.
+        max_q = meta.get("max_queries_per_question") or 15
+        if max_q <= 0:
+            continue
+        contributions.append(max(0.0, (float(max_q) - float(nq)) / float(max_q)))
+    if not contributions:
+        return 0.0
+    return sum(contributions) / len(contributions)
+
+
 async def best_format_score(*, state=None, **_kwargs) -> float:
     """
     Best per-turn partial-format score (0..1). Used at small positive weight
@@ -109,6 +154,7 @@ def build_clbench_rubric(
     *,
     parse_failure_penalty: float = -1.0,
     format_shaping_weight: float = 0.1,
+    query_efficiency_weight: float = 0.3,
     mean_instance_reward_weight: float = 1.0,
     final_instance_reward_weight: float = 0.0,
     extra_funcs: Optional[list[RewardFn]] = None,
@@ -143,6 +189,7 @@ def build_clbench_rubric(
         final_instance_reward,
         make_parse_failure_penalty(parse_failure_penalty),
         best_format_score,
+        query_efficiency_reward,
         num_instances_completed,
         num_notepad_updates,
         notepad_length_chars,
@@ -155,6 +202,7 @@ def build_clbench_rubric(
         final_instance_reward_weight,
         1.0,                         # parse_failure_penalty
         format_shaping_weight,
+        query_efficiency_weight,     # query_efficiency_reward
         0.0, 0.0, 0.0,              # diagnostics
     ] + [1.0] * len(extra_funcs or [])
     return vf.Rubric(funcs=funcs, weights=weights)
