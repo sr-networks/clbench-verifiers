@@ -2,7 +2,7 @@
 name = "clbench-poker"
 description = "Continual Learning Bench `exploitable_poker` task as a verifiers MultiTurnEnv. Optional icl_notepad-style structured memory."
 tags = ["continual-learning", "tool-use", "memory", "poker", "train", "eval"]
-version = "0.1.16"
+version = "0.1.17"
 requires-python = ">=3.10"
 authors = [{ name = "sr-networks" }]
 license = { text = "Apache-2.0" }
@@ -29,7 +29,12 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build]
-include = ["clbench_poker/**/*.py", "pyproject.toml", "README.md"]
+include = [
+    "clbench_poker/**/*.py",
+    "clbench_poker/data/*.json",
+    "pyproject.toml",
+    "README.md",
+]
 
 # Prime's evaluation defaults — when this env is used as an `[[eval.env]]`
 # block in a training config, these kick in unless overridden.

@@ -482,21 +482,31 @@ def _make_env_class():
             base = (
                 "You are an agent solving a continual-learning benchmark task. "
                 "Respond every turn with a single JSON object — no prose, no "
-                "markdown fences — matching the schema for the current turn. "
-                "Keep `thinking` brief: ≤50 words. State the action and a one-"
-                "sentence reason. Do not enumerate cards or replay the board "
-                "in prose; the board state is already in the prompt."
+                "markdown fences — matching the schema for the current turn."
             )
+            if self.task_name == "exploitable_poker":
+                # Poker-specific brevity / anti-replay guidance — the policy
+                # was trained on tight reasoning and we don't want it to
+                # re-emit the board state in `thinking`.
+                base += (
+                    " Keep `thinking` brief: ≤50 words. State the action and a "
+                    "one-sentence reason. Do not enumerate cards or replay the "
+                    "board in prose; the board state is already in the prompt."
+                )
             if self.use_notepad:
+                # Notepad guidance is task-agnostic. The "what to write down"
+                # examples vary per task ("opponent tendencies" only makes
+                # sense for poker), so keep the directive generic.
                 base += (
                     " The `notepad_update` field is REQUIRED on every action. "
                     "At the start of each new task instance, use it to record "
                     "concrete, transferable observations from the previous "
-                    "instance — opponent tendencies, what worked, what didn't. "
-                    "The notepad is the ONLY thing that survives between "
-                    "instances, so write what you'd want to know next time. "
-                    "Keep it ≤100 words. Set to null only if you genuinely "
-                    "have nothing new to add (e.g. mid-instance turns)."
+                    "instance — patterns, schema details, what worked, what "
+                    "didn't. The notepad is the ONLY thing that survives "
+                    "between instances, so write what you'd want to know next "
+                    "time. Keep it ≤100 words. Set to null only if you "
+                    "genuinely have nothing new to add (e.g. mid-instance "
+                    "turns)."
                 )
             if not self.schema_hint_in_system or schema is None:
                 return base

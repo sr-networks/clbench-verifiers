@@ -1,0 +1,78 @@
+# Prime Hosted Training — Qwen3.5-2B on `database_exploration` WITH NOTEPAD.
+#
+# This is the database analogue of `prime_qwen3_5_2b_notepad.toml`. Unlike
+# poker against a deterministic opponent (where memory needs many hands to
+# extract a statistical pattern), database_exploration is a one-shot-
+# discovery task: instance 1 issues `PRAGMA table_info(...)`-style queries
+# to discover the schema, writes the schema to the notepad, and instance 2+
+# answers directly using the cached schema knowledge.
+#
+# CLBench's primary metric for this task is "reduction in exploratory
+# queries over time" — i.e., does the agent learn to skip the discovery
+# phase. Final-instance reward (correct/incorrect) is what we train on
+# here, but reduced query count should fall out as a byproduct.
+
+name = "clbench-poker-qwen3.5-2b-db-explore-notepad"
+model = "Qwen/Qwen3.5-2B"
+
+max_steps = 100                # pilot — match the poker baseline's step count
+                                # so per-step costs and noise levels are
+                                # comparable.
+batch_size = 8
+rollouts_per_example = 8
+learning_rate = 1e-5
+lora_alpha = 16
+
+[sampling]
+max_tokens = 4096
+temperature = 1.0
+enable_thinking = false
+
+# Constrained decoding via vLLM guided_json.
+# DatabaseAction is {action, content}; we add notepad_update so this
+# becomes DatabaseActionWithNotepad. notepad_update is REQUIRED so the
+# model can't quietly drop the field (the bug fixed in env v0.1.16).
+[sampling.extra_body.guided_json]
+type = "object"
+title = "DatabaseActionWithNotepad"
+description = "Structured DB action with persistent notepad update."
+required = ["action", "content", "notepad_update"]
+
+[sampling.extra_body.guided_json.properties.action]
+type = "string"
+title = "Action"
+description = "QUERY (run SQL) or ANSWER (submit final answer)."
+enum = ["QUERY", "ANSWER"]
+
+[sampling.extra_body.guided_json.properties.content]
+type = "string"
+title = "Content"
+description = "SQL statement (for QUERY) or final answer string (for ANSWER)."
+maxLength = 2000
+
+[sampling.extra_body.guided_json.properties.notepad_update]
+title = "Notepad update"
+description = "Optional new full notepad content (≤200 words). Use it to record schema details (table names, column names, units, conventions) once you discover them. Leave null to keep unchanged."
+anyOf = [{ type = "string", maxLength = 1200 }, { type = "null" }]
+
+[[env]]
+id = "sr-networks/clbench-poker"
+# database_exploration is registered alongside exploitable_poker in the
+# CLBench package; we pick it via task_name. Same env wrapper, same
+# notepad logic — it's task-agnostic now.
+#
+# - num_instances=2 / max_instances_per_rollout=2: matches the poker
+#   baseline's rollout shape so cost and gradient SNR are comparable.
+# - clear_history_between_instances=true: forces the policy to actually
+#   USE the notepad rather than recall hand 1 verbatim from context.
+# - final_instance_reward_weight=1.0: every action token in instance 1
+#   (including notepad writes) gets credit from the instance-2 outcome —
+#   clean credit assignment for "did you write down the right schema?"
+# - max_turns=32: instance 1 may need 4-5 QUERY actions to discover the
+#   schema; instance 2 should need 1-2; budget covers both.
+args = { use_notepad = true, max_instances_per_rollout = 2, notepad_max_chars = 4000, max_turns = 32, max_input_tokens_per_rollout = 32000, end_on_parse_failure = false, clear_history_between_instances = true, mean_instance_reward_weight = 0.0, final_instance_reward_weight = 1.0, task_name = "database_exploration", task_kwargs = { num_instances = 2, num_questions = 2, seed = 0 } }
+
+[val]
+num_examples = 8
+rollouts_per_example = 1
+interval = 10
