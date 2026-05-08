@@ -39,16 +39,20 @@ just because the extra training made it generically better at poker?**
 A lot of the engineering effort in this repo is about answering that
 second question cleanly.
 
-## Current state of experiments (2026-05-07)
+## Current state of experiments (2026-05-08)
 
-**Headline:** at v0.1.14 the notepad memory channel was silently broken —
-`notepad_update` was nominally required by the TOML schema but the env's
-own injection clobbered the constraint, so vLLM let the model omit the
-field. With no writes, `rs.notepad` stayed empty and the
-`=== YOUR NOTEPAD ===` block was never rendered into hand 2's prompt.
-Notepad-on training paid a schema tax (extra field in the response space)
-without ever using the memory channel. Direct comparison: no-memory
-control IMPROVED more than notepad-on over the same 100 steps.
+**Headline so far on `exploitable_poker`:** the pipeline works, the
+schema-fix bug is shipped, the policy trains. But at this scale (Qwen3.5-2B,
+100-300 GRPO steps, 2-hand rollouts, calling-station opponent) the
+*memory contribution* at eval time is statistically indistinguishable
+from zero. We're pivoting to a task where one-shot observations
+(database schema discovery) plug in much more directly — see the
+"Pivot to `database_exploration`" section below.
+
+**Earlier headline (v0.1.14, kept here for context):** the notepad
+memory channel was silently broken — `notepad_update` was nominally
+required by the TOML schema but the env's own injection clobbered the
+constraint, so vLLM let the model omit the field. Fixed in v0.1.16.
 
 | Run | Env ver | Config | Final reward Δ (start → end) | Mean reward Δ | Note |
 |---|---|---|---|---|---|
@@ -99,77 +103,134 @@ uv run --python 3.12 python scripts/eval_remote.py \
   --task-arg opponent_policy=calling_station
 ```
 
-### Training results (100 steps each)
+### Training results
 
 Final-hand reward per rollout, averaged over the last 10 training
-steps (90-99):
+steps. The two `v0.1.14` rows are kept for context (broken memory
+channel + matched control); the v0.1.16 rows are the runs with a
+working memory channel:
 
-| Run | Env ver | Start (steps 0-9) | End (steps 90-99) | Δ |
+| Run | Env ver | Start (steps 0-9) | End (last 10) | Δ |
 |---|---|---|---|---|
-| **ON memory (v0.1.16, post-fix)** | 0.1.16 | −1.17 chips/hand | **+0.28** | **+1.45** |
-| OFF memory (v0.1.14, control) | 0.1.14 | −0.91 | −0.53 | +0.38 |
-| ON memory (v0.1.14, broken schema) | 0.1.14 | −0.74 | −0.78 | flat |
+| **ON memory, 300 steps (v0.1.16)** | 0.1.16 | −1.17 chips/hand | (smoothed) **−0.21** | **see plot** |
+| **ON memory, 100 steps (v0.1.16)** | 0.1.16 | −1.17 | **+0.28** | **+1.45** |
+| OFF memory, 100 steps (v0.1.14, control) | 0.1.14 | −0.91 | −0.53 | +0.38 |
+| ON memory, 100 steps (v0.1.14, broken schema) | 0.1.14 | −0.74 | −0.78 | flat |
 
-Crossing positive only happens after the v0.1.16 schema fix. The
-broken-schema ON run (v0.1.14, paid the schema tax with no working
-memory channel) ended slightly worse than where it started. Plot:
-`docs/training_curve.png`.
+The broken-schema ON run ended slightly worse than where it started
+(paid the schema tax with no working memory channel). After the
+v0.1.16 schema fix, the policy trends upward; the 300-step extension
+lowers per-rollout variance but does not push the absolute reward
+materially below the 100-step end-state. Plot: `docs/training_curve.png`.
 
 ### Held-out eval (CLBench `run_benchmark` via `scripts/eval_remote.py`)
 
-ON-memory checkpoint deployed on Prime Inference, evaluated against
-the `calling_station` opponent at **20 different task seeds**, with
+ON-memory checkpoints deployed on Prime Inference, evaluated against
+the `calling_station` opponent at **20 task seeds**, with
 `num_instances=2` (matches the training distribution) and `runs=5`
-(5 permutation orderings per seed). Stateful = notepad active,
-stateless baseline = system reset between instances:
+(5 permutation orderings per seed). Stateful = notepad active across
+instances; stateless baseline = system reset between instances.
+`mean_gain = stateful − stateless` is "did the notepad help at
+inference?".
 
-| | Mean | Std (across 20 seeds) | Std-error of mean | 95% CI |
-|---|---|---|---|---|
-| Stateful reward | −0.54 chips/hand | 1.25 | 0.28 | — |
-| Stateless baseline | −0.75 | 2.05 | 0.46 | — |
-| **`mean_gain` (stateful − stateless)** | **+0.21** | 2.03 | 0.45 | **[−0.70, +1.11]** |
+| Checkpoint | Stateful mean | Stateless baseline | **`mean_gain`** | SE | 95% CI |
+|---|---|---|---|---|---|
+| **300-step v0.1.16** | −0.54 | −0.26 | **−0.28** | **0.27** | **[−0.82, +0.27]** |
+| 100-step v0.1.16 | −0.54 | −0.75 | +0.21 | 0.45 | [−0.70, +1.11] |
 
-`mean_gain` is the cleanest "did the notepad help at inference?"
-measure. Point estimate is positive but **not statistically
-distinguishable from zero** — 95% CI straddles zero. Per-seed
-variance dominates: a single all-in pot can swing a 12-hand mean
-by ±5 chips, and we see seeds where memory looks worth +6.7 BB
-and others where it looks worth −3.2 BB. They cancel.
+Both straddle zero. **Neither distinguishes memory-helps from
+memory-doesn't-help.** With 3× more training the SE tightened ~40%
+(0.45 → 0.27) but the point estimate flipped sign in the noise. Per-seed
+variance dominates — a single all-in pot can swing a 12-hand mean by
+±5 chips. The 300-step policy plays *much more consistently* (per-seed
+std dropped from 1.25 to 0.44) but at a slightly lower absolute reward
+— it converges to a conservative "fold often, raise small" strategy
+that misses the upside the noisier baseline occasionally catches.
 
 ### What we can claim, what we can't
 
 - ✅ **Schema-fix bug found and shipped (v0.1.16)**: ``notepad_update``
   is now actually required by vLLM's grammar; notepad-write count
   per rollout climbed from 4.5 (broken) to 6.5 (working).
-- ✅ **Notepad training produced a meaningfully better one-shot
-  policy**: ON's stateless baseline is much better than what the
-  v0.1.14 OFF run finished training at (−0.75 vs OFF training-end
-  −0.53 vs OFF eval-stateless −0.75, all chips/hand on slightly
-  different distributions). Some of this is plausibly the extra
-  gradient channel from notepad-write tokens correlating with
-  hand-2 outcomes; some is just stochastic divergence between
-  training runs.
-- ⚠️ **Cannot yet claim memory helps at eval time**: `+0.21 ± 0.45`
-  point estimate is suggestive but inside noise.
-- ❌ **Cannot claim memory hurts**: the earlier single-seed `−0.45`
-  finding was firmly in the noise band — moving from 1 seed to 20
-  flipped the sign and shrank SE 2×, without pinning either side.
+- ✅ **Pipeline + cost story is solid**: end-to-end training on Prime
+  at ≈$3.40 per 100 steps; eval harness (`scripts/eval_remote.py`)
+  produces clean `mean_gain` numbers; reproducible across seeds.
+- ✅ **Notepad-flavoured training produces a more consistent
+  policy**: 300-step stateful std fell to 0.44 chips/hand (vs 1.25
+  at 100 steps).
+- ⚠️ **Cannot claim memory helps on this task at this scale**:
+  100-step gain `+0.21 ± 0.45`, 300-step gain `−0.28 ± 0.27`.
+  Both inside noise; tighter SE didn't lift the signal.
+- ❌ **Cannot claim memory hurts**: same noise band; the 300-step
+  point estimate is below zero but the 95% CI is `[−0.82, +0.27]`.
+- 🔍 **Diagnosed why**: against a deterministic exploitable opponent,
+  the within-rollout memory signal needs *many* hands to extract a
+  pattern. Two hands gives at most one observation, which doesn't
+  translate into a hand-2 EV improvement large enough to surface
+  above ±5-chip per-hand variance.
+
+### Pivot to `database_exploration`
+
+The diagnosis above motivates switching to a CLBench task where
+**one observation in instance 1 directly transforms instance 2+**.
+`database_exploration` is exactly that:
+
+- Sequential natural-language questions about a SQLite database
+  the agent doesn't know.
+- Per question, the agent can issue SQL `QUERY` actions to explore,
+  then submit `ANSWER`.
+- Primary CLBench metric: **reduction in exploratory queries over
+  time** as the agent learns the schema.
+- The "right" memory move: instance 1 issues `PRAGMA table_info(...)`,
+  writes "tables: products(id, name, price, category, stock); price
+  and stock are floats" to the notepad. Instance 2+ skips the
+  exploration step.
+- Bonus: a schema-drift variant (`products.db → products_drifted.db`
+  mid-sequence) tests whether the agent *updates* its notes vs.
+  trusting them blindly.
+
+Why this should give a measurable signal where poker doesn't:
+
+| | Poker (calling station) | `database_exploration` |
+|---|---|---|
+| Useful instance-1 signal | Statistical pattern across hands | Schema is fixed, fully discoverable in 1-2 queries |
+| Translates to instance-2 reward | Marginal (small EV per hand) | Huge (skip 4 exploratory queries, answer directly) |
+| Per-instance reward variance | ±5+ chips (deck shuffles) | ±~0.1 (correct/incorrect score) |
 
 ### Next
 
-1. **Longer training** at v0.1.16 settings (300-500 steps). 100 steps
-   gave only ~75 effective steps with a working memory channel
-   (the schema bug persisted ~25 steps into the v0.1.14 run);
-   GRPO needs more iterations to learn *what* to write down, not
-   just to fill the field.
-2. **Or much larger eval N** (60-80 task seeds): would tighten the
-   `mean_gain` CI to roughly ±0.3, enough to firmly cross zero on
-   either side. Cheap (~$3, ~1.5h) but doesn't shift the underlying
-   training signal.
-3. **Harder opponent**: `calling_station` is so exploitable a
-   constant strategy already does well. Switching to
-   `tight_aggressive` or a mixed schedule would punish a
-   forgetful policy more, raising the value of working memory.
+Within the remaining ~$8 budget, ranked:
+
+1. **Smoke-test `database_exploration` with our env wrapper** (~free):
+   confirm `CLBenchEnv` handles the new task's schema (`DatabaseAction`
+   has `action` + `content` fields) and that the rollout completes.
+   Will require gating poker-specific bits in `env.py`
+   (`_extract_legal_actions`, system-prompt language) on
+   `task_name == "exploitable_poker"`.
+2. **Push env v0.1.17** with the gated poker-specific bits (and any
+   small fixes from the smoke).
+3. **100-step pilot training run** on `database_exploration` with
+   notepad-on, 2 instances per rollout (~$3-4).
+4. **20-seed eval** on the resulting checkpoint (~$2). Headline:
+   does `mean_gain` clear zero on a task where one-shot memory
+   should actually pay?
+5. **(stretch) Add the differential reward** (`last_hand − mean(prev)`)
+   you suggested earlier as a knob in `rubric.py`. Out of budget for
+   this sprint but trivial to land for the next one.
+6. **(stretch) Schema-drift variant** to test whether the trained
+   policy *updates* its notepad when info goes stale.
+
+### Earlier candidate next steps (kept for record, no longer plan-A)
+
+- Longer training at v0.1.16 settings on poker. 300 steps tightened
+  the eval CI but didn't move the signal — likely a task-fit issue,
+  not an under-training issue.
+- Larger eval N (60-80 task seeds): would tighten poker's `mean_gain`
+  CI further but doesn't change the underlying.
+- Harder poker opponent: `calling_station` is so exploitable a
+  constant strategy already does well. Switching to
+  `tight_aggressive` or a mixed schedule would punish a
+  forgetful policy more, raising the value of working memory.
 
 ## Historical status (2026-05-06, evening)
 
