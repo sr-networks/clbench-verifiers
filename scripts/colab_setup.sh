@@ -23,8 +23,11 @@ echo ">> Running CLBench setup (downloads any task assets)…"
 ( cd "$CLBENCH_DIR" && python -m src.cli list )
 
 echo ">> Installing verifiers + RL stack…"
-pip install -q "verifiers[all]==0.1.7"
+# Avoid verifiers[all] here: verifiers 0.1.7 pulls brave-search 0.2.0,
+# whose legacy metadata is rejected by modern pip.
+pip install -q "verifiers==0.1.7"
 pip install -q "trl>=0.12" "transformers>=4.45" "accelerate>=0.34" "datasets>=2.20" "peft>=0.12"
+pip install -q "liger-kernel>=0.5.10" "deepspeed" "torchao>=0.16.0"
 
 # Verifiers 0.1.7's vf-vllm entrypoint imports vLLM's pre-0.20 server API.
 pip install -q "vllm==0.10.2"

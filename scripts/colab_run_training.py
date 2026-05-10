@@ -39,6 +39,24 @@ def main() -> None:
     os.chdir(repo)
 
     run(["git", "pull", "--ff-only"])
+    run([sys.executable, "-m", "pip", "install", "-q", "verifiers==0.1.7"])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "trl>=0.12",
+            "transformers>=4.45",
+            "accelerate>=0.34",
+            "datasets>=2.20",
+            "peft>=0.12",
+            "liger-kernel>=0.5.10",
+            "deepspeed",
+            "torchao>=0.16.0",
+        ]
+    )
     run([sys.executable, "-m", "pip", "install", "-q", "vllm==0.10.2"])
     run([sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."])
     run(
